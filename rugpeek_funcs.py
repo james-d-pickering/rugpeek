@@ -112,83 +112,78 @@ class Rug:
         # and time axis. no metadata. at the moment we need to get the metadata from he filename.
         self.wavelengths, self.times, self.matrix = RugTools.read_harpia_matrix(fname, extension)
         self.filename = fname
-
-        self.chirp_corrected = False
+        
 
         #consistent filename convention: split with underscores. define a function to split it up
         #and get the relevant bits, so the metadata is stored so it can be correlated with the dispersion fit
 
 
-    def open_clickable_rug(self, scale='log'):
-        fig = plt.figure()
-        ax = fig.gca()
         
-        ax.pcolormesh(self.wavelengths, self.times, self.matrix)
-        ax.set_xlabel('Wavelength [nm]')
-        ax.set_ylabel('Delay [ps]')
         
-        if scale == 'log':
-            ax.set_yscale('symlog')
-        elif scale == 'linear':
-            ax.set_yscale('linear')
-        else:
-            raise NameError
+     
         
-        return ax
+
+
  
-    def get_t0_positions(self, ax, degree):
-        ax.set_title(f"Click t0 at {degree} or more points, then press enter")
-        plt.draw()
-        self.calib_points = plt.ginput(n=-1, timeout=-1, show_clicks=True)
+    def get_t0_positions(self, degree):
+        if self.axis:
+            self.axis.set_title(f"Click t0 at {degree+1} or more points, then press enter")
+            plt.draw()
+            self.calib_points = plt.ginput(n=-1, timeout=-1, show_clicks=True)
+        else:
+            raise Exception("need to have plotted the data to enable t0 point selection, run .peek() first")
         return
 
-    # def interpolate_time_axis(self, dt=0.05):
-        # interpolate the time axis so we can apply the chirp correction
-    #    samples = np.size(self.times)/dt
-     #   x = np.arange(np.min(self.times), np.max(self.times), samples)
-      #  t_index = np.arange(np.size(self.times))
-      #  t_interp = np.interp(x, t_index, self.times)
-      #  plt.figure()
-      #  plt.plot(t_index, self.times)
-      #  plt.plot(x, t_interp)
-      #  return
-
-    def generate_time_axis(self, degree):
+    def fit_dispersion_curve(self, degree):
         wavelengths = [point[0] for point in self.calib_points]
         times = [point[1] for point in self.calib_points]
         fit = pn.Polynomial.fit(wavelengths, times, deg=degree)
         coefs = fit.convert().coef
-        time_fit = pn.polyval(self.wavelengths, coefs)
+        self.corrected_time = -pn.polyval(self.wavelengths, coefs)
         # corrected_time are the time corrections we need to use
-        self.corrected_time = -time_fit
         self.dispersion_coefs = coefs
         return 
 
-    def plot_chirp_correction(self, ax):
-        ax.plot(self.wavelengths, -self.corrected_time, color='k')
-        return
-       
 
     def peek(self, ax=None, cmap='inferno', min_max=None, aspect='equal', interpolation='none',
                 norm=None,scale='log', title=None, colourbar=False, xlabel=True, ylabel=True,
-                yticks=True, xticks=True):
+                yticks=True, xticks=True, show=True, raw=False, plot_dispersion=False):
         if not ax:
             fig = plt.figure(figsize=(6,6))
             ax0 = fig.gca()
+            self.axis = ax0
         else:
             ax0 = ax
+            self.axis = ax0
         
         if min_max:
             vmin = min_max[0]
             vmax = min_max[1]
         else:
-            min_max = (None, None)
+            vmin = np.min(self.matrix)
+            vmax = np.max(self.matrix)
             
         #print(vmin, vmax)
-        im = ax0.pcolormesh(self.wavelengths, self.times, self.matrix,
-        cmap=cmap, norm=colors.TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax))
-        #ax0.set_xticks(self.wavelengths)
-        #ax0.set_yticks(self.times)
+        if raw and hasattr(self, "raw_matrix"):
+            im = ax0.pcolormesh(self.wavelengths, self.times, self.raw_matrix,
+            cmap=cmap, norm=colors.TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax))
+        elif raw and not hasattr(self, "raw_matrix"):
+            raise Exception("Can't plot the raw matrix when dispersion correction not applied")
+        else:
+            im = ax0.pcolormesh(self.wavelengths, self.times, self.matrix,
+            cmap=cmap, norm=colors.TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax))
+        
+        if plot_dispersion:
+            if hasattr(self, "corrected_time"):
+                pass
+            elif hasattr(self, "dispersion_coefs"):
+                self.corrected_time = -pn.polyval(self.wavelengths, self.dispersion_coefs)
+            else:
+                raise Exception("can't plot dispersion correction curve when no correction given.")
+
+        #JDP prioritise a user given axis if given:
+            self.axis.plot(self.wavelengths, -self.corrected_time, color='k')
+         
         if scale == 'log':
             ax0.set_yscale('symlog')
         elif scale == 'linear':
@@ -224,8 +219,9 @@ class Rug:
         else:
             ax0.set_xticks(xticks)
             ax0.set_xticklabels([str(i) for i in xticks])
-
-        return im
+        if show:
+            plt.show()
+        return 
 
     def peek_3D(self, cmap='inferno', stride=10):
         fig = plt.figure(figsize=(10,10))
@@ -241,13 +237,24 @@ class Rug:
         ax.set_aspect('equalxy')
        
  
-    def apply_dispersion_correction(self):
-        # if chirp has been corrected, extend the interpolation range to the largest possible
-        if hasattr(self, "corrected_time"):
-            interp_min = np.min(self.times)+np.min(self.corrected_time)
-            interp_max = np.max(self.times)+np.max(self.corrected_time)
+    def apply_dispersion_correction(self, coefs=None):
+        
+        #JDP if user inputs coefficients, prioritise using these
+        if coefs:
+            #JDP note that you need to use polyval from the Polynomial class (pn), not base numpy...
+            coefs = np.asarray(coefs)
+
+            self.corrected_time = -pn.polyval(self.wavelengths, coefs)
+            self.dispersion_coefs = coefs #save them
+        #JDP otherwise, if the coefs have not been given, check if they exist from an "by eye" fit and use that
+        elif hasattr(self, "dispersion_coefs"):
+            pass
         else:
             raise Exception("need to find the dispersion correction before applying it, obvs")
+
+        interp_min = np.min(self.times)+np.min(self.corrected_time)
+        interp_max = np.max(self.times)+np.max(self.corrected_time)
+        
 
         #JDP interpolate the time axis so we can apply the chirp correction
         
@@ -298,14 +305,10 @@ class Rug:
             constant_values=-99)
         
         #JDP save the raw (uncorrected) matrix
-        self.raw_matrix = self.matrix
+        self.raw_matrix = self.matrix.copy()
 
         #JDP apply the chirp correction by rolling each wavelength's time axis by the necessary amount
         shifted_matrix = RugTools.indep_roll(data_interp, time_shifts, axis=0)
-        fig = plt.figure(); ax0 = fig.gca()
-       # ax0.set_title('chirp corrected, interpolated')
-       # ax0.pcolormesh(self.wavelengths, self.interpolated_time, shifted_matrix, shading='nearest') 
-       # ax0.set_yscale('symlog')
 
 
         #JDP now need to "undo" the interpolation. should just be:
@@ -314,23 +317,17 @@ class Rug:
             time_idx, _ = RugTools.find_nearest(self.interpolated_time, time)
             time_indices.append(time_idx)
 
-        shifted_coarse = shifted_matrix[time_indices, :]
-
-        fig = plt.figure(); ax0 = fig.gca()
-        ax0.set_title('Dispersion Corrected')
-        ax0.pcolormesh(self.wavelengths, self.times, shifted_coarse, shading='nearest')
-        ax0.set_yscale('symlog')
-        plt.show()
+        self.matrix = shifted_matrix[time_indices, :]
 
         return
 
    
 
-    def get_dispersion_correction(self, degree=3):
-        ax = self.open_clickable_rug(scale='log')
-        self.get_t0_positions(ax, degree)
-        self.generate_time_axis(degree=degree)
-        self.plot_chirp_correction(ax)
+    def get_dispersion_correction_eye(self, degree=3):
+        self.peek(show=False)
+        self.get_t0_positions(degree)
+        self.fit_dispersion_curve(degree=degree)
+        self.plot_dispersion_correction()
         return
         
     def get_time_trace(self, wavelength, plot=False):
