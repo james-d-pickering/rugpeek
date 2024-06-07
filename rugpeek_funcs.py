@@ -4,6 +4,7 @@ import numpy.polynomial.polynomial as pn
 import lmfit as lf
 import scipy as sp
 import matplotlib.colors as colors
+import os 
 
 class RugTools:
    # class for generic tools to help data processing
@@ -111,8 +112,7 @@ class Rug:
         # initialise the matrix from file. note matrix file only stores the data with wavelength 
         # and time axis. no metadata. at the moment we need to get the metadata from he filename.
         self.wavelengths, self.times, self.matrix = RugTools.read_harpia_matrix(fname, extension)
-        self.filename = fname
-        
+        self.filename = os.path.basename(fname)
 
         #consistent filename convention: split with underscores. define a function to split it up
         #and get the relevant bits, so the metadata is stored so it can be correlated with the dispersion fit
@@ -145,9 +145,9 @@ class Rug:
         return 
 
 
-    def peek(self, ax=None, cmap='inferno', min_max=None, aspect='equal', interpolation='none',
+    def peek(self, ax=None, cmap='PuOr', min_max=None, aspect='equal', interpolation='none',
                 norm=None,scale='log', title=None, colourbar=False, xlabel=True, ylabel=True,
-                yticks=True, xticks=True, show=True, raw=False, plot_dispersion=False):
+                yticks=True, xticks=True, show=False, raw=False, plot_dispersion=False):
         if not ax:
             fig = plt.figure(figsize=(6,6))
             ax0 = fig.gca()
@@ -163,6 +163,9 @@ class Rug:
             vmin = np.min(self.matrix)
             vmax = np.max(self.matrix)
             
+        title = self.filename
+        title = self.filename
+
         #print(vmin, vmax)
         if raw and hasattr(self, "raw_matrix"):
             im = ax0.pcolormesh(self.wavelengths, self.times, self.raw_matrix,
@@ -181,7 +184,6 @@ class Rug:
             else:
                 raise Exception("can't plot dispersion correction curve when no correction given.")
 
-        #JDP prioritise a user given axis if given:
             self.axis.plot(self.wavelengths, -self.corrected_time, color='k')
          
         if scale == 'log':
@@ -327,7 +329,6 @@ class Rug:
         self.peek(show=False)
         self.get_t0_positions(degree)
         self.fit_dispersion_curve(degree=degree)
-        self.plot_dispersion_correction()
         return
         
     def get_time_trace(self, wavelength, plot=False):
