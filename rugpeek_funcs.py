@@ -5,6 +5,11 @@ import lmfit as lf
 import scipy as sp
 import matplotlib.colors as colors
 import os 
+from matplotlib.gridspec import GridSpec
+from matplotlib.widgets import Slider, Button, Cursor
+import random
+import mplcursors
+
 
 class RugTools:
    # class for generic tools to help data processing
@@ -116,11 +121,6 @@ class Rug:
 
         #consistent filename convention: split with underscores. define a function to split it up
         #and get the relevant bits, so the metadata is stored so it can be correlated with the dispersion fit
-
-
-        
-        
-     
         
 
 
@@ -237,7 +237,198 @@ class Rug:
         ax.set_ylabel('Time delay [ps]')
         ax.set_zlabel('$\Delta mOD$')
         ax.set_aspect('equalxy')
-       
+
+    ###########################################################
+
+    
+    def peekexplore(self, cmap='PuOr', min_max=None, aspect='equal', interpolation='none',
+                norm=None,scale='log', title=None, colourbar=False, xlabel=True, ylabel=True,
+                yticks=True, xticks=True, show=False, raw=False, plot_dispersion=False):
+        
+        timeslice = self.get_time_trace(450)
+        wlslice_g = self.get_wavelength_trace(0)
+        
+        # Define initial parameters
+        W_init = 450 
+        T_init = 0
+        
+        fig = plt.figure(figsize=(10,10))
+        grid = GridSpec(2, 2, width_ratios=[3, 3], height_ratios=[3, 3], wspace=0.3, hspace=0.3)
+        ax1 = fig.add_subplot(grid[0]) 
+        ax2 = fig.add_subplot(grid[1])
+        ax3 = fig.add_subplot(grid[2])
+    
+        ax1.set_ylabel('Time delay / ps')
+        ax1.set_xlabel('Wavelength / nm')
+        ax1.set_yscale('symlog')
+        line_vertical = ax1.axvline(x=W_init, color= 'red', label= 'axvline - full height')
+        line_horizontal = ax1.axhline(y=T_init, color='red', label= 'axhline - full height')
+            
+        line2, = ax2.plot(self.times, timeslice, color='hotpink')
+        ax2.set_xscale("symlog")
+        ax2.set_xlabel('Time / s')
+        ax2.set_ylabel('ΔA')
+        ax2.set_title('Timeslice')
+            
+        line3, = ax3.plot(self.wavelengths, wlslice_g, color='hotpink')
+        ax3.set_xlabel('Wavelength / λ')
+        ax3.set_ylabel('ΔA')
+        ax3.set_title('Wavelength slice')
+
+        
+        
+            
+        title = self.filename
+
+
+        
+
+        if min_max:
+            vmin = min_max[0]
+            vmax = min_max[1]
+        else:
+            vmin = np.min(self.matrix)
+            vmax = np.max(self.matrix)
+
+        if raw and hasattr(self, "raw_matrix"):
+            im = ax1.pcolormesh(self.wavelengths, self.times, self.raw_matrix,
+            cmap=cmap, norm=colors.TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax))
+        elif raw and not hasattr(self, "raw_matrix"):
+            raise Exception("Can't plot the raw matrix when dispersion correction not applied")
+        else:
+            im = ax1.pcolormesh(self.wavelengths, self.times, self.matrix,
+            cmap=cmap, norm=colors.TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax))
+        
+        if plot_dispersion:
+            if hasattr(self, "corrected_time"):
+                pass
+            elif hasattr(self, "dispersion_coefs"):
+                self.corrected_time = -pn.polyval(self.wavelengths, self.dispersion_coefs)
+            else:
+                raise Exception("can't plot dispersion correction curve when no correction given.")
+
+            self.axis.plot(self.wavelengths, -self.corrected_time, color='k')
+         
+        if scale == 'log':
+            ax1.set_yscale('symlog')
+        elif scale == 'linear':
+            ax1.set_yscale('linear')
+        else:
+            raise NameError
+
+        if title:
+            ax1.set_title(title)
+
+        if colourbar:
+            if not ax:
+                fig.colorbar(im)
+            else:
+                raise NameError
+        if xlabel:
+            ax1.set_xlabel('Wavelength [nm]')
+        if ylabel:
+            ax1.set_ylabel('Time delay [ps]')
+
+        if not yticks:
+            ax1.tick_params(axis="y", left=False, labelleft=False)
+        elif yticks == True:
+            pass
+        else:
+            ax1.set_yticks(yticks)
+            ax1.set_yticklabels([str(i) for i in yticks]) 
+        
+        if not xticks:
+            ax1.tick_params(axis="x", bottom=False, labelbottom=False)
+        elif xticks == True:
+            pass
+        else:
+            ax1.set_xticks(xticks)
+            ax1.set_xticklabels([str(i) for i in xticks])
+        if show:
+            plt.show()
+
+        # Sliders
+        axtime = plt.axes([0.60, 0.40, 0.30, 0.02])
+        time_slider = Slider(
+            ax=axtime,
+            label='Wavelength',
+            valmin=346.587463,
+            valmax=553.152954,
+            valinit=W_init,
+            color='hotpink'
+        )
+        
+        axwave = plt.axes([0.60, 0.35, 0.30, 0.02])
+        wavelength_slider = Slider(
+            ax=axwave,
+            label='Time',
+            valmin=-10,
+            valmax=1000,
+            valinit=T_init,
+            color='hotpink'
+        )
+        
+        def update(event):
+            time_ydata = self.get_time_trace(time_slider.val)
+            line2.set_ydata(time_ydata)
+            ax2.set_ylim(min(time_ydata)-1.5, max(time_ydata)+1.5)
+        
+            wl_ydata = self.get_wavelength_trace(wavelength_slider.val)
+            line3.set_ydata(wl_ydata)
+            ax3.set_ylim(min(wl_ydata)-2, max(wl_ydata)+2)
+            fig.canvas.draw_idle()
+        
+            ax1.axvline(x=time_slider.val, color= 'red', label= 'axvline - full height')
+            ax1.lines[0].remove()
+        
+            ax1.axhline(y=wavelength_slider.val, color='red', label= 'axhline - full height')
+            ax1.lines[0].remove()
+            
+            
+        time_slider.on_changed(update)
+        wavelength_slider.on_changed(update)
+        
+        
+        # Buttons
+            
+        resetax = plt.axes([0.1, 0.925, 0.1, 0.04])
+        buttonax = plt.axes([0.25, 0.925, 0.1, 0.04])
+        annotateax = plt.axes([0.40, 0.925, 0.1, 0.04])
+        button = Button(resetax, 'Reset', color='pink', hovercolor='0.9')
+        button2 = Button(buttonax, 'Colour', color='pink', hovercolor='0.9')
+        button3 = Button(annotateax, 'Annotate', color='pink', hovercolor='0.9')
+
+        def colour_change(event):
+            color = '#'+"%06x" % random.randint(0, 0xFFFFFF)
+            line2.set_color(color)
+            line3.set_color(color)
+            
+            fig.canvas.draw_idle()
+            
+        def annotate(event):
+            mplcursors.cursor(line2)
+            mplcursors.cursor(line3)
+        
+        def reset(event):
+            time_slider.reset()
+            wavelength_slider.reset()
+            line2.set_color('hotpink')
+            line3.set_color('hotpink')
+            
+        button.on_clicked(reset)
+        button2.on_clicked(colour_change)
+        button3.on_clicked(annotate)
+
+        resetax._button = button
+        buttonax._button = button2
+        annotateax._button = button3
+        
+        plt.show()
+
+        return 
+
+
+    #############################################################
  
     def apply_dispersion_correction(self, coefs=None):
         
@@ -340,6 +531,15 @@ class Rug:
             ax.plot(self.times, time_trace)
             ax.set_xscale("symlog")
         return time_trace
+
+    def get_wavelength_trace(self, time, plot=False):
+        delay_idx, delay_real = RugTools.find_nearest(self.times, time)
+        wavelength_trace= self.matrix[delay_idx, :]
+        if plot:
+            fig = plt.figure()
+            ax = fig.gca()
+            ax.plot(self.wavelengths, wavelength_trace)
+        return wavelength_trace
     
     def fit_time_trace(self, time_trace, model, params, method='least_squares'):
         parameters = model.make_params()
