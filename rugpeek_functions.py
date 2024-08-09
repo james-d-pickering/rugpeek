@@ -371,7 +371,141 @@ class RugTools:
         cleaned_files = [file for file in files if not file.endswith('processed.dat')]
         
         return cleaned_files
+
+    def average_rugs(rugs):
+        #JDP could add a check here in case people average nonsensical stuff
+        averaged_rug = rugs[0]
+        averaged_rug.matrix = np.mean(np.array([i.matrix for i in rugs]), axis=0)
+        averaged_rug.filename + averaged_rug.filename.removesuffix('_matrix')
+        averaged_rug.filename = averaged_rug.filename + '_averaged'
+        return averaged_rug
+
+
+    def interpolate_time_axis(rug, mintime=None, maxtime=None, timestep=None, method='nearest',
+                             undo=True, verbose=False):
+
+        if mintime:
+            interp_min = mintime
+        else:
+            interp_min = np.min(rug.times)
+        
+        if maxtime:
+            interp_max = maxtime
+        else:
+            interp_max = np.max(rug.times)
+
+        if timestep:
+            dt = timestep
+        else:
+            dt = np.min(np.ediff1d(rug.times)) 
+            
+        #JDP set the time resolution to the smallest step
+        if verbose:
+            print("interpolation time step is", dt)
+            print("interpolation limits are", interp_min, interp_max)
+        
+        # number of interpolation points is latest time - earliest time / smallest step
+
+        samples = int((interp_max-interp_min)/dt)
+        if verbose:
+            print("number of interpolated time points is", samples)
+        
+        #JDP create a new axis to get the new time points on
+        x = np.linspace(interp_min, interp_max, samples)
+
+        #JDP interpolate from the old time axis to the new one
+        t_interp = np.interp(x, rug.times, rug.times)
+
+
+        #JDP get a meshgrid with the new interpolated time axis so we can evaluate interpolated TA data
+        wavelength_2D, times_2D = np.meshgrid(rug.wavelengths, t_interp, indexing="ij")
+        
+        #JDP interpolate the actual TA data from the matrix (or, create a function to do it)
+        interp2D = sp.interpolate.RegularGridInterpolator((rug.times, rug.wavelengths), rug.matrix,
+                bounds_error=False, fill_value=-9999, method=method)
+
+        data_interp = interp2D((times_2D, wavelength_2D)).T 
+        
+        if undo:
+            time_indices = []
+            for time in rug.times:
+                time_idx, _ = RugTools.find_nearest(t_interp, time)
+                time_indices.append(time_idx)
+
+            rug.matrix = data_interp[time_indices, :]
+            rug.times = t_interp[time_indices]
+        else:
+            rug.matrix = data_interp
+            rug.raw_times = rug.times
+            rug.times = t_interp
+        return t_interp
+
+    def undo_time_interpolation(rug, new_axis):
+        time_indices = []
+        for time in new_axis:
+            time_idx, _ = RugTools.find_nearest(rug.times, time)
+            time_indices.append(time_idx)
+
+        rug.matrix = rug.matrix[time_indices, :]
+        rug.times = rug.times[time_indices]
+        return
     
+    def combine_rugs_wavelengths(rugs, fname):
+        #JDP assume first file is 'origin'
+        #JDP if you want to combine more than 2 needs editing.
+        #JDP assumes that you want to trim overlapping wavelengths from specturm 1, also needs changing
+
+        #JDP need to interpolate everything onto the same time grid for this to be reliable
+        #JDP get the min and max times for the interpolation
+        mintime = np.min(np.array([i.times for i in rugs]))
+        maxtime = np.max([i.times for i in rugs])
+        original_time = rugs[0].times
+        #JDP interpolate the data onto a common time axis
+        for rug in rugs:
+            RugTools.interpolate_time_axis(rug, mintime=mintime, maxtime=maxtime, 
+                                           undo=False, verbose=False)
+
+        
+        start_wl = rugs[-1].wavelengths[0] #first wl of the most red spectrum
+        end_wl = rugs[0].wavelengths[-1] #last wl of the most blue spectrum
+        overlap_point_blue, _ = RugTools.find_nearest(rugs[0].wavelengths, start_wl)
+        overlap_point_red, _ = RugTools.find_nearest(rugs[-1].wavelengths, end_wl)
+        overlap_points = [[0, overlap_point_blue], [0, -1]]
+        
+        
+        combined_rug = Rug()
+        combined_rug.matrix = np.concatenate([i.matrix[:, overlap_points[idx][0]:overlap_points[idx][1]] for idx, i in enumerate(rugs)], axis=1)
+        combined_rug.wavelengths = np.concatenate([i.wavelengths[overlap_points[idx][0]:overlap_points[idx][1]] for idx, i in enumerate(rugs)], axis=0)
+        combined_rug.times = rugs[0].times #assume same times from interpolation
+        combined_rug.filename = fname     
+
+        #stick it back onto the original axis for speed
+        RugTools.undo_time_interpolation(combined_rug, original_time)
+        combined_rug.peek()
+
+        return combined_rug
+     
+       # fig = plt.figure()
+       # ax = fig.gca()
+       # ax.imshow(combined_rug.matrix, vmin=-10, cmap='PuOr')
+       # sys.exit()
+       # ax.set_title('Click on reference baseline')
+    # refx, refy = plt.ginput(1)[0]
+       # ax.axhline(y=refy)
+       # ax.set_title('Click on second baseline')
+       # plt.draw()
+       # secx, secy = plt.ginput(1)[0]
+       # ax.axhline(y=secy)
+
+        #difference = refy - secy
+        #return combined_rug
+        
+    def cut_wavelengths_spectrum(wavelengths, spectrum, wlmin, wlmax, fill=np.nan):
+        wlmin_idx, _ = RugTools.find_nearest(wavelengths, wlmin)
+        wlmax_idx, _ = RugTools.find_nearest(wavelengths, wlmax)
+        print(wlmin_idx, wlmax_idx)
+        spectrum[wlmin_idx:wlmax_idx] = fill
+        return 
     
     def file_sort(filename):
 
@@ -546,7 +680,7 @@ class RugTools:
 
 ##############################
     
-class RugModels:
+class RugFits:
     """
     RugModels is a class for models that can be used to fit to - work in progress
     
@@ -574,6 +708,7 @@ class RugModels:
     
     
     def exp_mod_gauss(x, t0, FWHM, tau, A):
+
         sigma = FWHM/2.35482
         B = ((sigma**2)/(2*tau**2))-((x-t0)/tau)
         z = (((x-t0)/sigma) - (sigma/tau))/(np.sqrt(2))
@@ -583,6 +718,22 @@ class RugModels:
         exp_mod_gaussian = A*np.exp(B)*C
         return exp_mod_gaussian
 
+    def residual( params, t, y):
+        t01 = params['t01']
+        FWHM1 = params['FWHM1']
+        tau1 = params['tau1']
+        A1 = params['A1']
+        t02 = params['t02']
+        FWHM2 = params['FWHM2']
+        tau2 = params['tau2']
+        A2 = params['A2']
+
+        res = RugFits.exp_mod_gauss(t, t01, FWHM1, tau1, A1) + RugFits.exp_mod_gauss(t, t02, FWHM2, tau2, A2) - y
+        #print(res, res.shape)
+        return res
+        
+    
+
 
 class Rug:
     """
@@ -590,7 +741,7 @@ class Rug:
     
     """
 
-    def __init__(self, fname, extension):
+    def __init__(self, fname=None, extension=None):
         """
         Initialise the matrix from file and stores data with wavelength axis, time axis and also the metadata.
         
@@ -603,20 +754,26 @@ class Rug:
                 Extension of the file
 
         """
-        
-        self.wavelengths, self.times, self.matrix = RugTools.read_harpia_matrix(fname, extension)
-        self.filename = os.path.basename(fname)
+        if fname and extension:
+            self.wavelengths, self.times, self.matrix = RugTools.read_harpia_matrix(fname, extension)
+            self.filename = os.path.basename(fname)
         
         #############
         
-        self.metadata = RugTools.get_metadata(self.filename)
-        self.sample = self.metadata['Sample']
-        self.concentration = self.metadata['Concentration']
-        self.pump_wavelength = self.metadata['Pump_wavelength']
-        self.WLC_source = self.metadata['WLC_source']
-        self.measurement = self.metadata['Measurement']
-        self.run = self.metadata['Run']
-        self.other = self.metadata['Other']
+            self.metadata = RugTools.get_metadata(self.filename)
+            self.sample = self.metadata['Sample']
+            self.concentration = self.metadata['Concentration']
+            self.pump_wavelength = self.metadata['Pump_wavelength']
+            self.WLC_source = self.metadata['WLC_source']
+            self.measurement = self.metadata['Measurement']
+            self.run = self.metadata['Run']
+            self.other = self.metadata['Other']
+        else:
+            self.wavelengths = None
+            self.times = None
+            self.filename = None
+            self.matrix = None
+            
         
         
         
@@ -664,12 +821,15 @@ class Rug:
         self.corrected_time = -pn.polyval(self.wavelengths, coefs)
         # corrected_time are the time corrections we need to use
         self.dispersion_coefs = coefs
+        
         return 
 
 
-    def peek(self, ax=None, cmap='PuOr', min_max=None, aspect='equal', interpolation='none',
-                norm=None,scale='log', title=None, colourbar=False, xlabel=True, ylabel=True,
-                yticks=True, xticks=True, show=False, raw=False, plot_dispersion=False):
+    def peek(self, ax=None, cmap='PuOr', min_max=None,aspect='equal',
+             interpolation='none',norm=None,scale='log',
+             title=None,colourbar=False, xlabel=True, 
+             ylabel=True, yticks=True, xticks=True, show=False,
+             plot_dispersion=False, plotted_matrix='matrix'):
         """
         Plots a figure of time delay vs wavelengths
         
@@ -720,22 +880,30 @@ class Rug:
             vmin = min_max[0]
             vmax = min_max[1]
         else:
-            vmin = np.min(self.matrix)
-            vmax = np.max(self.matrix)
+            vmin = np.nanmin(self.matrix)
+            vmax = np.nanmax(self.matrix)
             
         title = self.filename
         title = self.filename
 
         #print(vmin, vmax)
-        if raw and hasattr(self, "raw_matrix"):
-            im = ax0.pcolormesh(self.wavelengths, self.times, self.raw_matrix,
+        if plotted_matrix == 'matrix':
+            nanmask = np.ma.masked_where(np.isnan(self.matrix), self.matrix)
+            im = ax0.pcolormesh(self.wavelengths, self.times, nanmask,
             cmap=cmap, norm=colors.TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax))
-        elif raw and not hasattr(self, "raw_matrix"):
-            raise Exception("Can't plot the raw matrix when dispersion correction not applied")
-        else:
-            im = ax0.pcolormesh(self.wavelengths, self.times, self.matrix,
+        elif plotted_matrix == 'chirped':
+            nanmask = np.ma.masked_where(np.isnan(self.raw_matrix), self.raw_matrix)
+            im = ax0.pcolormesh(self.wavelengths, self.times, nanmask,
             cmap=cmap, norm=colors.TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax))
-        
+        elif plotted_matrix == 'unsubtracted':
+            nanmask = np.ma.masked_where(np.isnan(self.unsubtracted_matrix), self.unsubtracted_matrix)
+            im = ax0.pcolormesh(self.wavelengths, self.times, nanmask,
+            cmap=cmap, norm=colors.TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax))
+        elif plotted_matrix == 'uncut':
+            nanmask = np.ma.masked_where(np.isnan(self.uncut_matrix), self.uncut_matrix)
+            im = ax0.pcolormesh(self.wavelengths, self.times, nanmask,
+            cmap=cmap, norm=colors.TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax))
+            
         if plot_dispersion:
             if hasattr(self, "corrected_time"):
                 pass
@@ -761,7 +929,7 @@ class Rug:
                 #fig = .figure(figsize=(7,6))
                 fig = plt.gcf()
                 fig.set_size_inches(8, 7)
-                colorb = fig.colorbar(im)
+                colorb = fig.colorbar(im, ticks=[vmin, 0, vmax], shrink=1)
                 colorb.set_label('ΔOD')
             else:
                 raise NameError
@@ -811,7 +979,7 @@ class Rug:
         ax.view_init(90,0,90)
         ax.set_xlabel('Wavelength [nm]')
         ax.set_ylabel('Time delay [ps]')
-        ax.set_zlabel('$\Delta mOD$')
+        ax.set_zlabel(r'$\Delta mOD$')
         ax.set_aspect('equalxy')
 
     ###########################################################
@@ -861,20 +1029,23 @@ class Rug:
         wlslice_g = self.get_wavelength_trace(0)
         
         # Define initial parameters
-        W_init = 450 
-        T_init = 0
+        W_init = self.wavelengths[0] 
+        T_init = self.times[0]
         
         fig = plt.figure(figsize=(10,10))
-        grid = GridSpec(2, 2, width_ratios=[3, 3], height_ratios=[3, 3], wspace=0.3, hspace=0.3)
-        ax1 = fig.add_subplot(grid[0]) 
-        ax2 = fig.add_subplot(grid[1])
-        ax3 = fig.add_subplot(grid[2])
+        grid = GridSpec(2, 2, width_ratios=[3, 3], height_ratios=[3, 3], 
+                        wspace=0.3, hspace=0.3)
+        ax1 = fig.add_subplot(grid[0]) #rug
+        ax2 = fig.add_subplot(grid[1]) #decay slice
+        ax3 = fig.add_subplot(grid[2]) #spectrum slice
     
         ax1.set_ylabel('Time delay / ps')
         ax1.set_xlabel('Wavelength / nm')
         ax1.set_yscale('symlog')
-        line_vertical = ax1.axvline(x=W_init, color= 'red', label= 'axvline - full height')
-        line_horizontal = ax1.axhline(y=T_init, color='red', label= 'axhline - full height')
+        line_vertical = ax1.axvline(x=W_init, color= 'red',
+                                    label= 'axvline - full height')
+        line_horizontal = ax1.axhline(y=T_init, color='red', 
+                                      label= 'axhline - full height')
             
         line2, = ax2.plot(self.times, timeslice, color='hotpink')
         ax2.set_xscale("symlog")
@@ -888,79 +1059,16 @@ class Rug:
         ax3.set_title('Wavelength slice')
 
         title = self.filename
-
-        if min_max:
-            vmin = min_max[0]
-            vmax = min_max[1]
-        else:
-            vmin = np.min(self.matrix)
-            vmax = np.max(self.matrix)
-
-        if raw and hasattr(self, "raw_matrix"):
-            im = ax1.pcolormesh(self.wavelengths, self.times, self.raw_matrix,
-            cmap=cmap, norm=colors.TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax))
-        elif raw and not hasattr(self, "raw_matrix"):
-            raise Exception("Can't plot the raw matrix when dispersion correction not applied")
-        else:
-            im = ax1.pcolormesh(self.wavelengths, self.times, self.matrix,
-            cmap=cmap, norm=colors.TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax))
         
-        if plot_dispersion:
-            if hasattr(self, "corrected_time"):
-                pass
-            elif hasattr(self, "dispersion_coefs"):
-                self.corrected_time = -pn.polyval(self.wavelengths, self.dispersion_coefs)
-            else:
-                raise Exception("can't plot dispersion correction curve when no correction given.")
-
-            self.axis.plot(self.wavelengths, -self.corrected_time, color='k')
-         
-        if scale == 'log':
-            ax1.set_yscale('symlog')
-        elif scale == 'linear':
-            ax1.set_yscale('linear')
-        else:
-            raise NameError
-
-        if title:
-            ax1.set_title(title)
-
-        if colourbar:
-            if not ax:
-                fig.colorbar(im)
-            else:
-                raise NameError
-        if xlabel:
-            ax1.set_xlabel('Wavelength [nm]')
-        if ylabel:
-            ax1.set_ylabel('Time delay [ps]')
-
-        if not yticks:
-            ax1.tick_params(axis="y", left=False, labelleft=False)
-        elif yticks == True:
-            pass
-        else:
-            ax1.set_yticks(yticks)
-            ax1.set_yticklabels([str(i) for i in yticks]) 
-        
-        if not xticks:
-            ax1.tick_params(axis="x", bottom=False, labelbottom=False)
-        elif xticks == True:
-            pass
-        else:
-            ax1.set_xticks(xticks)
-            ax1.set_xticklabels([str(i) for i in xticks])
-        if show:
-            plt.show()
-
+        self.peek(ax=ax1)
         # Sliders
         axtime = plt.axes([0.60, 0.40, 0.30, 0.02])
         time_slider = Slider(
             ax=axtime,
             label='Wavelength',
-            valmin=346.587463,
-            valmax=553.152954,
-            valinit=W_init,
+            valmin=self.wavelengths[0],
+            valmax=self.wavelengths[-1],
+            valinit=self.wavelengths[0],
             color='hotpink'
         )
         
@@ -968,30 +1076,40 @@ class Rug:
         wavelength_slider = Slider(
             ax=axwave,
             label='Time',
-            valmin=-10,
-            valmax=1000,
-            valinit=T_init,
+            valmin=self.times[0],
+            valmax=self.times[-1],
+            valinit=self.times[0],
             color='hotpink'
         )
         
-        def update(event):
+        def update(val):
             """
             Updates the graphs when the user interacts with the widget.
             
             """
-            time_ydata = self.get_time_trace(time_slider.val)
+            
+            time_ydata = self.get_time_trace(np.log(time_slider.val))
             line2.set_ydata(time_ydata)
-            ax2.set_ylim(min(time_ydata)-1.5, max(time_ydata)+1.5)
-        
+            try:
+                ax2.set_ylim(np.nanmin(time_ydata)-1.5, np.nanmax(time_ydata)+1.5)
+            except:
+                pass
+                
             wl_ydata = self.get_wavelength_trace(wavelength_slider.val)
             line3.set_ydata(wl_ydata)
-            ax3.set_ylim(min(wl_ydata)-2, max(wl_ydata)+2)
+            try:
+                ax3.set_ylim(np.nanmin(wl_ydata)-2, np.nanmax(wl_ydata)+2)
+            except:
+                pass
+                
             fig.canvas.draw_idle()
         
-            ax1.axvline(x=time_slider.val, color= 'red', label= 'axvline - full height')
+            ax1.axvline(x=time_slider.val, color= 'red', 
+                        label= 'axvline - full height')
             ax1.lines[0].remove()
         
-            ax1.axhline(y=wavelength_slider.val, color='red', label= 'axhline - full height')
+            ax1.axhline(y=wavelength_slider.val, color='red',
+                        label= 'axhline - full height')
             ax1.lines[0].remove()
             
             
@@ -1106,14 +1224,16 @@ class Rug:
         return
 
 
-    def get_average_background(self):
+    def background_subtract(self):
         """
         User defines an area for background removal by clicking two lines on the plot. An average value is calulated from the defined area and is then removed from the entire matrix. 
         
         """
         times = []
         count = 0
-     
+        if not hasattr(self, 'ax'):
+            self.peek(show=False)
+            
         while count < 2:
             self.axis.set_title(f"Click 2 lines to define area for background removal")
             plt.draw()
@@ -1123,15 +1243,12 @@ class Rug:
             self.axis.axhline(y=time)
             count += 1
             plt.pause(0.05)
-
-
-
         else:
             print('\nTaken average background')
           
 
-        maximum = max(times)
-        minimum = min(times)
+        maximum = np.max(times)
+        minimum = np.min(times)
         
         max_index, actualmax = RugTools.find_nearest(self.times, maximum)
         min_index, actualmin = RugTools.find_nearest(self.times, minimum)
@@ -1141,38 +1258,23 @@ class Rug:
             area_indexes.append(i)
 
   
-        test = self.matrix[[area_indexes], :]
+        background_region = self.matrix[[area_indexes], :].T
 
-        change = test.transpose()
 
-        mean_values = np.mean(change, axis =1)
+        mean_background = np.mean(background_region, axis =1)
+          
+        background_matrix = np.zeros_like(self.matrix)
+        
+        background_matrix = np.stack([mean_background for i in range(len(self.times))], axis=0)[:,:,0]
+        print(self.matrix.shape, background_matrix.shape)
+        
+        if not hasattr(self, 'unsubtracted_matrix'):
+            self.unsubtracted_matrix = self.matrix.copy()
 
-        reverse = mean_values.transpose()
-  
-        reverse_matrix = np.zeros_like(self.matrix)
-        for i in range(len(self.times)):
-            reverse_matrix[i, :] = reverse_matrix[i, :] + reverse
-            
-        self.bg_matrix = self.matrix.copy()
-
-        matrix = self.matrix - reverse_matrix
+        matrix = self.matrix - background_matrix
         self.matrix = matrix
-
-
-
-        fig = plt.figure(figsize=(7,6))
-        ax0 = fig.gca()
-        self.axis = ax0
-        vmin = np.min(matrix)
-        vmax = np.max(matrix)
-        ax0.set_yscale('symlog')
-
-        im = ax0.pcolormesh(self.wavelengths, self.times, matrix,
-        cmap='PuOr', norm=colors.TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax))
-        ax0.set_xlabel('Wavelength [nm]')
-        ax0.set_ylabel('Time delay [ps]')
-        fig.colorbar(im, ax=ax0)
-
+        self.peek(plotted_matrix='unsubtracted')
+        self.peek()
         return
 
     def get_background_correction_average(self):
@@ -1238,8 +1340,13 @@ class Rug:
         """
         times = []
         count = 0
+        
+        if not hasattr(self, "axis"):
+            self.peek()
 
         while count < 1:
+  
+                
             self.axis.set_title('Indicate where baseline is')
             plt.draw()
             pts=plt.ginput(1)
@@ -1529,12 +1636,12 @@ class Rug:
         return
     
 
-    def compute_SVD(self):
+    def compute_SVD(self, threshold=100, tol=1.0E-10):
 
         try:
 
             U, S, V = np.linalg.svd(self.matrix)
-
+            S[np.abs(S) < tol] = 0
         except:
 
             raise Exception('SVD did not converge - correct data loaded?')
@@ -1547,8 +1654,45 @@ class Rug:
 
         self.principal_kinetics = U.T
 
+        singular_threshold = np.min(S[np.nonzero(S)])*threshold
+        print(f'Taking threshold for singular value significance as {threshold}x larger than smallest singular value ({np.round(singular_threshold, 9)}).')
+        singular_differences = np.abs(np.ediff1d(self.singular_values))
+        Stotal = np.sum(self.singular_values**2)
+        self.singular_fractions = self.singular_values**2 / Stotal
+        self.relevant_sing = np.array([ i for i in singular_differences if i > singular_threshold])
+        print(f'Found {len(self.relevant_sing)} significant singular values')
+
+        cpt_sum = 0
+        for i in range(len(self.relevant_sing)):
+            cpt_sum = cpt_sum + np.round(self.singular_fractions[i]*100,2)
+            print(f'{np.round(self.singular_fractions[i]*100,2)} % of data variance described by component {i+1}.')
+
+        print(f'Overall, {np.round(cpt_sum,2)} % of data variance described by the first {len(self.relevant_sing)} components.')
+        print(f'Leaving {np.round((100-cpt_sum),2)} % of data variance described by the the remaining {np.round(len(self.singular_values) -len(self.relevant_sing),2)} components which are below threshold (roughly {np.round((100-cpt_sum)/(len(self.singular_values) -len(self.relevant_sing)),2)} % per component).')
+
+        
+        self.relevant_spectra = self.principal_spectra[0:len(self.relevant_sing)]
+        self.relevant_kinetics = self.principal_kinetics[0:len(self.relevant_sing)]
+
+        self.relevant_matrices = np.array([ self.relevant_sing[i]*(np.outer(self.relevant_kinetics[i],self.relevant_spectra[i])) for i in range(len(self.relevant_sing))])
+
+        self.reconstructed_TA = np.sum(self.relevant_matrices, axis=0)
+
+
+
+        
+        return
+
+    def plot_SVD(self):
+        if hasattr(self, 'relevant_sing'):
+            plt.figure()
+        pass
+
+    def SVD_explorer(self):
+
         fig = plt.figure(figsize=(10,10))
-        grid = GridSpec(2, 2, width_ratios=[3, 3], height_ratios=[3, 3], wspace=0.3, hspace=0.3)
+        grid = GridSpec(2, 2, width_ratios=[3, 3], 
+                        height_ratios=[3, 3], wspace=0.3, hspace=0.3)
         ax1 = fig.add_subplot(grid[0])
         ax1.set_ylabel('Time delay (ps)')
         ax1.set_xlabel('Wavelength (nm)')
@@ -1709,19 +1853,12 @@ class Rug:
         button.on_clicked(reset)
         resetax._button = button
         plt.show()
-        
-        
-        
-        
 
         return
 
-
-
-
     ###############################################################
  
-    def apply_dispersion_correction(self, coefs=None):
+    def apply_dispersion_correction(self, coefs=[None]):
         """
         Applies a dispersion correction to the figure depending on what the user has selected.
         
@@ -1747,7 +1884,7 @@ class Rug:
         
         
         elif hasattr(self, "dispersion_coefs"):
-            pass
+            self.corrected_time = -pn.polyval(self.wavelengths, self.dispersion_coefs)
         else:
             raise Exception("need to find the dispersion correction before applying it, obvs")
 
@@ -1864,6 +2001,7 @@ class Rug:
        
         
         """
+        if 
         wavelength_idx, wavelength_real = RugTools.find_nearest(self.wavelengths, wavelength)
         time_trace = self.matrix[:, wavelength_idx]
         if plot:
@@ -1906,8 +2044,24 @@ class Rug:
         parameters.pretty_print()
         result = model.fit(time_trace, params=parameters, x=self.times, method=method )
         return result
+
+    def reset_matrix(self):
+        if hasattr(self, 'uncut_matrix'):
+            self.matrix = np.copy(self.uncut_matrix)
+        if hasattr(self, 'uncut_times'):
+            self.times = np.copy(self.uncut_times)
+        if hasattr(self, 'uncut_wavelengths'):
+            self.wavelengths = np.copy(self.uncut_wavelengths)
+        else:
+            pass
+        return
         
     def limit_times(self, tmin=None, tmax=None):
+        if not hasattr(self, 'uncut_matrix'):
+            self.uncut_matrix = np.copy(self.matrix)
+        if not hasattr(self, 'uncut_times'):
+            self.uncut_times = np.copy(self.times)
+            
         if tmax:
             tidx, _= RugTools.find_nearest(self.times, tmax)
             self.matrix = self.matrix[:tidx, :]
@@ -1916,10 +2070,30 @@ class Rug:
             tidx, _ = RugTools.find_nearest(self.times, tmin)
             self.matrix=self.matrix[tidx:, :]
             self.times = self.times[tidx:]
-
         return
+
+    def cut_wavelengths(self, wlmin, wlmax, fill=0):
+        wlmin_idx, _ = RugTools.find_nearest(self.wavelengths, wlmin)
+        wlmax_idx, _ = RugTools.find_nearest(self.wavelengths, wlmax)
+
+        if hasattr(self, 'uncut_matrix'):
+            pass
+        else:
+            self.uncut_matrix = np.copy(self.matrix)
+            
+        self.matrix[:, wlmin_idx:wlmax_idx] = fill
+        return
+
+    
+    
     
     def limit_wavelengths(self, wlmin=None, wlmax=None):
+        
+        if not hasattr(self, 'uncut_matrix'):
+            self.uncut_matrix = np.copy(self.matrix)
+        if not hasattr(self, 'uncut_wavelengths'):
+            self.uncut_wavelengths = np.copy(self.wavelengths)
+            
         if wlmin:
             wlix, _ = RugTools.find_nearest(self.wavelengths, wlmin)
             self.matrix = self.matrix[:, wlix:]
