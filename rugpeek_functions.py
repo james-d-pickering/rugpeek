@@ -1375,6 +1375,7 @@ class Rug:
         else:
             if verbose:
                 print('\nTaken average background')
+            plt.close('all')
           
 
         maximum = np.max(times)
@@ -1395,7 +1396,6 @@ class Rug:
         background_matrix = np.zeros_like(self.matrix)
         
         background_matrix = np.stack([mean_background for i in range(len(self.times))], axis=0)[:,:,0]
-        print(self.matrix.shape, background_matrix.shape)
         
         if not hasattr(self, 'unsubtracted_matrix'):
             self.unsubtracted_matrix = self.matrix.copy()
