@@ -21,6 +21,7 @@ import sys
 import re
 import pprint
 import fnmatch
+import string
 
 
 
@@ -190,7 +191,7 @@ class RugTools:
 
         return list1
 
-    def get_metadata(file):
+    def get_metadata(file, verbose=False):
         """
         Extracts metadata from a file
         
@@ -225,7 +226,8 @@ class RugTools:
         keys.append('Sample')
 
         if len(metadata) == 1:
-            print('Missing information -  filename assumed to be sample')
+            if verbose:
+                print('Missing information -  filename assumed to be sample')
             
         if any([item == 'TA' or item == 'chirp' for item in metadata])  == True:
             measure = ([item == 'TA' or item == 'chirp' for item in metadata])
@@ -235,7 +237,8 @@ class RugTools:
             keys.append('Measurement')
         
         else:
-            print('Missing: Measurement')
+            if verbose:
+                print('Missing: Measurement')
             keys.append('Measurement')
             items.append('None')
 
@@ -247,7 +250,8 @@ class RugTools:
             keys.append('Run')
              
         else:
-            print('Missing: Run')
+            if verbose:
+                print('Missing: Run')
             keys.append('Run')
             items.append('None')
 
@@ -259,7 +263,8 @@ class RugTools:
             keys.append('Pump_wavelength')    
 
         else:
-            print('Missing: Pump Wavelength')
+            if verbose:
+                print('Missing: Pump Wavelength')
             keys.append('Pump_wavelength')
             items.append('None')
 
@@ -272,9 +277,10 @@ class RugTools:
 
 
         else:
+            if verbose:
+                print('Missing: Concentration')
             keys.append('Concentration')
             items.append('None')
-            print('Missing: Concentration')
 
 
         if any([item == 'SHG' or item =='FUN' for item in metadata])  == True:
@@ -285,9 +291,11 @@ class RugTools:
             keys.append('WLC_source')
 
         else:
+            if verbose:
+                print('Missing: WLC source')
             keys.append('WLC_source')
             items.append('None')
-            print('Missing: WLC source')
+
 
         dictionary = dict(zip(keys, items))
         
@@ -450,7 +458,7 @@ class RugTools:
         rug.times = rug.times[time_indices]
         return
     
-    def combine_rugs_wavelengths(rugs, fname):
+    def combine_rugs_wavelengths(rugs, fname, show=False):
         #JDP assume first file is 'origin'
         #JDP if you want to combine more than 2 needs editing.
         #JDP assumes that you want to trim overlapping wavelengths from specturm 1, also needs changing
@@ -481,7 +489,8 @@ class RugTools:
 
         #stick it back onto the original axis for speed
         RugTools.undo_time_interpolation(combined_rug, original_time)
-        combined_rug.peek()
+        if show:
+            combined_rug.peek()
 
         return combined_rug
      
@@ -682,9 +691,13 @@ class RugTools:
     
 class RugFits:
     """
-    RugModels is a class for models that can be used to fit to - work in progress
+    RugFits contains all the functions used for fitting spectra
     
     """
+    def inverse_uncertainty(x, s):
+        s_inv = s / (x**2)
+        return s_inv
+
     def convolve(arr, kernel):
         out = np.convolve(arr, kernel, mode='full')
         return out
@@ -718,21 +731,137 @@ class RugFits:
         exp_mod_gaussian = A*np.exp(B)*C
         return exp_mod_gaussian
 
-    def residual( params, t, y):
-        t01 = params['t01']
-        FWHM1 = params['FWHM1']
-        tau1 = params['tau1']
-        A1 = params['A1']
-        t02 = params['t02']
-        FWHM2 = params['FWHM2']
-        tau2 = params['tau2']
-        A2 = params['A2']
 
-        res = RugFits.exp_mod_gauss(t, t01, FWHM1, tau1, A1) + RugFits.exp_mod_gauss(t, t02, FWHM2, tau2, A2) - y
-        #print(res, res.shape)
-        return res
-        
+    def global_fitter(xdata, ydata, paramdata, system, extradata, ncpts=None, vars_per_cpt=None, prefixcpt='c', prefixdata='d',
+                 fixed_vars=None, offset_vars=None, fixed_data_vars=None, 
+                 model=lf.models.ExponentialGaussianModel, method='leastsq', normalise=True, verbose=False):
+
+        allowed_models = ['expmodgauss']
     
+        # catch it in the case that you feed in 1D data
+        if len(ydata.shape) == 1:
+            ydata = np.expand_dims(ydata, axis=0)
+    
+        params = RugFits.create_params_object(ydata, paramdata, prefixdata, prefixcpt, 
+                                fixed_vars=fixed_vars, offset_vars=offset_vars, fixed_data_vars=fixed_data_vars,
+                                 ncpts=ncpts, vars_per_cpt=vars_per_cpt)
+        if verbose:
+            params.pretty_print()
+        out = lf.minimize(RugFits.builtin_model, params, args = (xdata, ydata, ncpts, model, prefixdata, prefixcpt), method=method)
+        return out
+
+    def builtin_model(params, xdata, ydata, ncpts, model, prefixdata, prefixcpt, normalise=True):
+        # expect to get 3+2n params in dict for ncpts, so check this:
+        # if len(params) != ncpts:
+        #  raise Exception('you idiot')
+        #print(ydata.shape)
+        #is the problem that the whole thing keeps getting called over and over, 
+        #so the model keeps getting redefined?
+        residual = np.zeros_like(ydata)
+        for idx, _ in enumerate(ydata):
+            if normalise:
+                ydata[idx] = ydata[idx]/np.max(np.abs(ydata[idx]))
+        
+            for jdx, n in enumerate(range(ncpts)): #loop over exponential components
+                if (idx == 0 and jdx == 0):
+                    mod = model(prefix=prefixdata+str(idx)+prefixcpt+str(jdx)+'_')
+                else:
+                    mod += model(prefix=prefixdata+str(idx)+prefixcpt+str(jdx)+'_')
+        # here we have the model defined for that dataset
+
+        #the problem here is that it is fitting each dataset to two components rather than fitting each to one component with the same t constant
+         
+            residual[idx,:] = ydata[idx,:] - mod.eval(params=params, x=xdata)
+        #sys.exit()
+        return residual.flatten()
+
+    def create_params_object(ydata, paramdata, prefixdata, prefixcpt, fixed_vars=None, offset_vars=None, 
+                                fixed_data_vars=None, ncpts=None, vars_per_cpt=None):
+        ''' Creates a parameters object from given dictionary and ydata.
+
+        Would you ever want each exponential component to have a different IRF?
+
+        What i want to do is define the prefixes on the different datasets and then the stuff within each model can be initialised 
+        as the model is created, otherwise you'd need two different sets of prefixes.
+
+        prefix works as dNcM - N datasets, M components.
+
+        need to re add the IRF stuff as a part of each exponential commpoent (rather than defining it over and over)
+
+        Assumes we are doing a global fit, so creates parameters for the number of datasets you've got,
+        but fixes the values of the variables that shouldn't vary between fits.
+        '''
+        params = lf.Parameters()
+        expected_length = (ncpts*vars_per_cpt)+len(offset_vars)
+        if len(paramdata) > expected_length:
+            print(f'Parameter dictionary passed in is longer than expected. Ignoring everything after the {expected_length}th element.')
+            paramdata = dict(list(paramdata.items())[:expected_length])
+
+        elif len(paramdata) < expected_length:
+            raise Exception(f'Not enough parameters passed in. Expected {expected_length}, got {len(paramdata)}')
+        # loop over all the y data being globally fit (datasets)
+        for idx,  _ in enumerate(ydata):
+            # loop over the param list, if first loop then want to vary the IRF params but fix for all others (components)
+            cptcount = 0
+            cptidx = 0
+            for jdx, paramkey in enumerate(paramdata): 
+        
+                if paramkey not in offset_vars:
+                    params.add(prefixdata+str(idx)+prefixcpt+str(cptidx)+'_'+paramkey.rstrip(string.digits), value=paramdata[paramkey][0], 
+                                min=paramdata[paramkey][1], max=paramdata[paramkey][2], vary=paramdata[paramkey][3])
+
+
+                    if ((cptidx != 0 or idx !=0) and paramkey.rstrip(string.digits) in fixed_vars):
+                        params[prefixdata+str(idx)+prefixcpt+str(cptidx)+'_'+paramkey.rstrip(string.digits)].expr = prefixdata+'0'+prefixcpt+'0_'+paramkey.rstrip(string.digits)
+                        params[prefixdata+str(idx)+prefixcpt+str(cptidx)+'_'+paramkey.rstrip(string.digits)].vary = False
+                    
+                #fix the parameters that are the same for each component, but not dataset    
+            # elif (idx != 0 and paramkey in fixed_cpt_vars):
+            #     params[prefixdata+str(idx)+prefixcpt+str(cptidx)+'_'+paramkey.rstrip(string.digits)].vary = True
+                    
+                #otherwise if more than one dataset, fix the other variables to those from dataset 1
+                    elif (idx != 0 and any(var in paramkey for var in fixed_data_vars)):
+                    #this needs fixing
+                        params[prefixdata+str(idx)+prefixcpt+str(cptidx)+'_'+paramkey.rstrip(string.digits)].expr = prefixdata+'0'+prefixcpt+str(cptidx)+'_'+paramkey.rstrip(string.digits)
+                        params[prefixdata+str(idx)+prefixcpt+str(cptidx)+'_'+paramkey.rstrip(string.digits)].vary = False
+
+
+                    
+                    cptcount += 1    
+                    
+                    if cptcount%vars_per_cpt == 0:
+                        cptidx += 1
+                else:
+                    params.add(prefixdata+str(idx)+prefixcpt+str(cptidx)+'_'+paramkey.rstrip(string.digits), value=paramdata[paramkey][0], 
+                                min=paramdata[paramkey][1], max=paramdata[paramkey][2], vary=paramdata[paramkey][3])
+                #fix the parameters that are the same for each component and dataset
+                
+        return params
+        
+    def plot_fit_result(output, xaxis, traces, wavelengths, ncpts, print_report=False, xlabel='Delay [ps]', 
+                            ylabel = r'$\Delta$OD [mOD]', xlim=(-5,50)):
+        for i, _ in enumerate(traces):
+            resid = output.residual.reshape(len(traces), len(traces[0]))
+            fitdata = traces[i] - resid[i]
+            fig = plt.figure()
+            ax = fig.gca()
+            ax.plot(xaxis, fitdata, color='C0', label='Fit')
+            ax.scatter(xaxis, traces[i], color='C1', label='Raw')
+            ax.legend()
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel(ylabel)
+            ax.set_title(f'Fit to delay at {wavelengths[i]} nm')
+            ax.set_xlim(xlim[0], xlim[1])
+           
+        for n in range(ncpts):
+            l1 = np.round(1/output.params['d'+str(i)+'c'+str(n)+'_gamma'].value, 4) 
+            l1_err = np.round(RugFits.inverse_uncertainty(l1, output.params['d'+str(i)+'c'+str(n)+'_gamma'].stderr), 4)
+            print(f'Lifetime {n} is: {l1} +/- {l1_err} ps.')
+            
+        if print_report:
+            print(lf.fit_report(output))
+
+        return
 
 
 class Rug:
@@ -1224,7 +1353,7 @@ class Rug:
         return
 
 
-    def background_subtract(self):
+    def background_subtract(self, verbose=False, show=False):
         """
         User defines an area for background removal by clicking two lines on the plot. An average value is calulated from the defined area and is then removed from the entire matrix. 
         
@@ -1244,7 +1373,8 @@ class Rug:
             count += 1
             plt.pause(0.05)
         else:
-            print('\nTaken average background')
+            if verbose:
+                print('\nTaken average background')
           
 
         maximum = np.max(times)
@@ -1256,7 +1386,6 @@ class Rug:
         area_indexes = []
         for i in range(min_index, max_index+1):
             area_indexes.append(i)
-
   
         background_region = self.matrix[[area_indexes], :].T
 
@@ -1273,8 +1402,9 @@ class Rug:
 
         matrix = self.matrix - background_matrix
         self.matrix = matrix
-        self.peek(plotted_matrix='unsubtracted')
-        self.peek()
+        if show:
+            self.peek(plotted_matrix='unsubtracted')
+            self.peek()
         return
 
     def get_background_correction_average(self):
@@ -1328,7 +1458,7 @@ class Rug:
     
     
     
-    def offset(self, coef):
+    def offset(self, coef, verbose=False):
         """
         Calculates the offset and adjusts the figure accordingly
         
@@ -1375,7 +1505,8 @@ class Rug:
         ax0.set_xlabel('Wavelength [nm]')
         ax0.set_ylabel('Time delay [ps]')
         ax0.set_title(title)
-        print('Offset corrected')
+        if verbose:
+            print('Offset corrected')
    
 
      
@@ -1646,8 +1777,6 @@ class Rug:
 
             raise Exception('SVD did not converge - correct data loaded?')
 
-
-
         self.singular_values = S
 
         self.principal_spectra = V
@@ -1677,16 +1806,71 @@ class Rug:
         self.relevant_matrices = np.array([ self.relevant_sing[i]*(np.outer(self.relevant_kinetics[i],self.relevant_spectra[i])) for i in range(len(self.relevant_sing))])
 
         self.reconstructed_TA = np.sum(self.relevant_matrices, axis=0)
-
-
-
         
         return
 
-    def plot_SVD(self):
+    def plot_SVD(self, plot_spectra=True, plot_kinetics=True, plot_matrices=True, plot_sing=True, 
+    cmap = 'PuOr', timescale='linear'):
+    #JDP could be nice to have the option of keeping these all on one plot
         if hasattr(self, 'relevant_sing'):
-            plt.figure()
-        pass
+            if plot_sing:
+                fig = plt.figure()
+                axsing = fig.gca()
+                axsing.scatter(range(len(self.singular_values)), self.singular_values, 
+                    marker='x', s=10)
+                axsing.set_xlabel('Singular Value')
+                axsing.set_ylabel('Magnitude')
+                axsing.set_title('Singular Values')
+
+            if plot_kinetics:
+                fig = plt.figure()
+                axkin = fig.gca()
+                for i, trace in enumerate(self.relevant_kinetics):
+                    axkin.plot(self.times, trace, label='Component '+str(i+1))
+                axkin.set_xlabel('Delay [ps]')
+                axkin.set_ylabel('Signal [au]')
+                axkin.set_title('Principal Kinetics')
+                axkin.set_xscale(timescale)
+                axkin.set_xlim(-10,100)
+                axkin.legend()
+
+            if plot_spectra:
+                fig = plt.figure()
+                axspec = fig.gca()
+                for i, spectrum in enumerate(self.relevant_spectra):
+                    axspec.plot(self.wavelengths, spectrum, label='Component '+str(i+1))
+                axspec.set_xlabel('Wavelength [nm]')
+                axspec.set_ylabel('Signal [au]')
+                axspec.set_title('Principal Spectra')
+                axspec.legend()
+            
+            if plot_matrices:
+                maxcols = 3
+
+                if len(self.relevant_sing) < maxcols:
+                    ncols = len(self.relevant_sing)
+                    nrows = 1
+                else: 
+                    ncols = maxcols
+                    nrows = len(self.relevant_sing) % maxcols + 1
+                ratio = nrows/ncols
+                fig = plt.figure(figsize=(6, 6*ratio))
+                grid = GridSpec(nrows, ncols)
+                for i, matrix in enumerate(self.relevant_matrices):
+                    ax = fig.add_subplot(grid[i])
+                    vmin = matrix.min()
+                    vmax = matrix.max()/10
+                    im = ax.pcolormesh(self.wavelengths, self.times, matrix,
+                            cmap=cmap, norm=colors.TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax))
+                    ax.set_yscale('symlog')
+                    ax.set_ylabel('Delay [ps]')
+                    ax.set_xlabel('Wavelength [nm]')
+                    ax.set_title('Component '+str(i+1))
+                    ax.set_aspect('auto')
+        else:
+            raise Exception("Can't plot an SVD without an SVD being computed.")
+
+        return
 
     def SVD_explorer(self):
 
@@ -2001,15 +2185,29 @@ class Rug:
        
         
         """
-        if 
-        wavelength_idx, wavelength_real = RugTools.find_nearest(self.wavelengths, wavelength)
-        time_trace = self.matrix[:, wavelength_idx]
+        time_traces = []
+
+        try:
+            for wl in wavelength:
+                wavelength_idx, wavelength_real = RugTools.find_nearest(self.wavelengths, wl)
+                time_traces.append(self.matrix[:, wavelength_idx])
+
+        except:
+            wavelength_idx, wavelength_real = RugTools.find_nearest(self.wavelengths, wavelength)
+            time_traces.append(self.matrix[:, wavelength_idx])
+            wavelength = [wavelength] #JDP to save a faff with plotting
+
         if plot:
             fig = plt.figure()
             ax = fig.gca()
-            ax.plot(self.times, time_trace)
+            for i, trace in enumerate(time_traces):
+                ax.plot(self.times, trace, label=str(wavelength[i])+'nm')
             ax.set_xscale("symlog")
-        return time_trace
+            ax.set_xlabel('Delay [ps]')
+            ax.set_ylabel(r'$\Delta$OD [mOD]')
+            ax.legend()
+        
+        return time_traces
 
     def get_wavelength_trace(self, time, plot=False):
         """
@@ -2028,13 +2226,27 @@ class Rug:
                 Array of the wavelength slice
         
         """
-        delay_idx, delay_real = RugTools.find_nearest(self.times, time)
-        wavelength_trace= self.matrix[delay_idx, :]
+        wavelength_traces = []
+        try:
+            for t in time:
+                delay_idx, delay_real = RugTools.find_nearest(self.times, t)
+                wavelength_traces.append(self.matrix[delay_idx, :])
+        except:
+            delay_idx, delay_real = RugTools.find_nearest(self.times, time)
+            wavelength_traces.append(self.matrix[delay_idx, :])
+            time = [time]
+
         if plot:
             fig = plt.figure()
             ax = fig.gca()
-            ax.plot(self.wavelengths, wavelength_trace)
-        return wavelength_trace
+            for i, trace in enumerate(wavelength_traces):
+                ax.plot(self.wavelengths, trace, label=str(time[i])+'ps')
+            ax.set_xlabel('Wavelength [nm]')
+            ax.set_ylabel(r'$\Delta$OD [mOD]')
+            ax.legend()
+        
+        
+        return wavelength_traces
     
     def fit_time_trace(self, time_trace, model, params, method='least_squares'):
         parameters = model.make_params()
@@ -2072,16 +2284,17 @@ class Rug:
             self.times = self.times[tidx:]
         return
 
-    def cut_wavelengths(self, wlmin, wlmax, fill=0):
-        wlmin_idx, _ = RugTools.find_nearest(self.wavelengths, wlmin)
-        wlmax_idx, _ = RugTools.find_nearest(self.wavelengths, wlmax)
-
+    def cut_wavelengths(self, wlranges, fill=0):
         if hasattr(self, 'uncut_matrix'):
             pass
         else:
             self.uncut_matrix = np.copy(self.matrix)
-            
-        self.matrix[:, wlmin_idx:wlmax_idx] = fill
+
+        for pair in wlranges:
+            wlmin_idx, _ = RugTools.find_nearest(self.wavelengths, pair[0])
+            wlmax_idx, _ = RugTools.find_nearest(self.wavelengths, pair[1])
+            self.matrix[:, wlmin_idx:wlmax_idx] = fill
+
         return
 
     

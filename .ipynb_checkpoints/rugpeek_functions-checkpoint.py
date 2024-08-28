@@ -2001,6 +2001,7 @@ class Rug:
        
         
         """
+        
         wavelength_idx, wavelength_real = RugTools.find_nearest(self.wavelengths, wavelength)
         time_trace = self.matrix[:, wavelength_idx]
         if plot:
