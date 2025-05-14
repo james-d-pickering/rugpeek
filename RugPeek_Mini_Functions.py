@@ -83,7 +83,9 @@ def load_dat_file(file, extension):
             sort.append(line)
 
     
-    delays_ = sort[11:len(sort):6] 
+    delays_ = sort[10:len(sort):6] # [11:len(sort):6] 
+    ########################################################################################################################################################
+    
     # skips over the first 12 lines to reach 'Measurement..... x' (x = delay time) then iterates over every 6th element 
     # (there are 5 lines separating the lines that contain sequential delay time point information) in the list 'sort' 
     # and stores this in the list 'delays_' (containing the delay time associated with every sample measurement incl. repeats from each 'run'
@@ -94,9 +96,10 @@ def load_dat_file(file, extension):
     
     for i in delays_:     
         for character in i:
-            delays_list.append(i[((len(i) - len(delays_[0]) )+27):((len(i) - len(delays_[0]) )+43)]) # len(delays_[0])
+            delays_list.append(i[((len(i) - len(delays_[0]) )+27):((len(i) - len(delays_[0]) )+43)]) 
             break
-            
+
+    
     # remove empty spaces
     delays_ps = []
     
@@ -114,8 +117,32 @@ def load_dat_file(file, extension):
             
     delays_ps = list(map(float, output))
     
+
+
+
     
     # retrieve the wavelength data
+    wavelengths = []
+    
+    with open(file+extension, encoding="utf-8") as f:
+        for line in f:
+            if 'Wavelength: ' in line:
+                _w = line[line.rindex('Wavelength: '):]
+                for v in _w[_w.rindex(' '):][1:-1]:
+                    wavelengths.append(v)
+                
+                
+    del wavelengths[15:len(wavelengths):16]
+
+    wavelengths_nm = []
+    
+    for i in range(0, len(wavelengths), 15):
+        wavelengths_nm.append(float(''.join(wavelengths[i:i+15])))    
+    ######################################################################################################################################################
+
+
+    
+    # retrieve all the measured intensity data   
     data = []
         
     with open(file+extension, encoding="utf-8") as f:
@@ -126,7 +153,6 @@ def load_dat_file(file, extension):
             else:
                 pass
                 
-    
     del data[15:len(data):16] # remove the '\t' character at every 16th element
     
     data_ = []
@@ -135,97 +161,214 @@ def load_dat_file(file, extension):
         data_.append(''.join(data[i:i+15])) # combine every element with no spaces into groups of 15 (number of characters for each value)
         
     
-    wavelengths_nm = list(map(float, data_[0:256]))
-        
-    
+    # wavelengths_nm = list(map(float, data_[0:256]))
+
+
+
     # retrieve the absorption data for both the pumped and unpumped, background and sample spectra 
     
-    abs_per_run = ((len(wavelengths_nm)*4) + (len(delays_ps)*len(wavelengths_nm)*4))
-    # total number of absorption data points per 'run'
+    data_p_per_run = ((len(wavelengths_nm)*4) + (len(delays_ps)*len(wavelengths_nm)*4))
+    # total number of intensity data points per 'run'
     # (4*len(wavelengths_nm) for one background spectrum per run
     # (len(delays_ps)*len(wavelengths_nm)*4) = len(delays_ps) sample spectra per run
 
     # calculate the number of complete experiment runs (so the incomplete runs can be ignored when loading data)
-    number_of_runs = int((len(data_[256:]) / abs_per_run))
-    runs = np.linspace(0, number_of_runs-1, number_of_runs) 
-
-    run_indicies = []
+    # number_of_runs = int((len(data_[256:]) / data_p_per_run))
+    number_of_runs = int((len(data_) / data_p_per_run))
     
-    for idx, val in enumerate(runs):
-        run_indicies.append(idx)
+    ######################################################################################################################################################
+    run_indicies = []
+
+    for i in range(number_of_runs):
+        run_indicies.append(i)
         
+
     ######################################################################################################################################################
     # seems to work ok but not sure why I need to add 256 at the end.... ?
     
-    absorption_data = data_[256: (number_of_runs*abs_per_run)+256] 
-
-    
-    """
-    stores all the absorption data (all lines where the first character is numeric) from the _.dat' file in a list excluding the first line containing
-    the wavelengths and the last few lines containing absorption data from an incomplete run.
-    
-    This function is not general, values for certain variables must be input by manually reading the '_.dat' file
-    For example:
-    Solvent_630_SHG: consider only the absorption data for runs 1-4 (run 5 was incomplete)
-    len(absorption_data)) = ((256*4)+(256*4*100))*4 data points (4*256 for the background + 4*100*256 for sample at each time) * 4 runs
-    
-    This function was intended to be used to obtain the static UV-VIS absorption spectrum of the sample (unpumped absorption spectrum) however the data
-    in each '_.dat' file is a direct measure of the unreferenced probe light intensity at the detector (rather than an absorption spectrum)
-    """
+    # int_data = data_[256:(number_of_runs*data_p_per_run)+256] 
+    int_data = data_[0:(number_of_runs*data_p_per_run)+256] 
     
     # store the 'unpumped' background absorption data from each run in an array
-    background_up_delta_OD = np.zeros(shape=(len(run_indicies), len(wavelengths_nm)))
+    background_up_int = np.zeros(shape=(len(run_indicies), len(wavelengths_nm)))
     # One background spectrum is measured for each 'run', len(run_indicies) 'runs' in total
 
     for i in run_indicies:
-        background_up_delta_OD[i] = absorption_data[((i*abs_per_run) + (len(wavelengths_nm)*3)) : ((i*abs_per_run) + (len(wavelengths_nm)*4))]
+        background_up_int[i] = int_data[((i*data_p_per_run) + (len(wavelengths_nm)*3)) : ((i*data_p_per_run) + (len(wavelengths_nm)*4))]
+
     
+    mean_bckg_up_int = np.zeros_like(wavelengths_nm)
+    bckg_up_int_st_dev = np.zeros_like(wavelengths_nm)
+
+    for i, v in enumerate(background_up_int.T):
+        mean_bckg_up_int[i] = np.cumsum(v, axis=0)[-1]/number_of_runs
+        bckg_up_int_st_dev[i] = np.std(v)
+        
+
     # store the 'pumped' background absorption data from each run in an array
-    background_p_delta_OD = np.zeros(shape=(len(run_indicies), len(wavelengths_nm)))
+    background_p_int = np.zeros(shape=(len(run_indicies), len(wavelengths_nm)))
     
     for i in run_indicies:
-        background_p_delta_OD[i] = absorption_data[(i*abs_per_run) : ((i*abs_per_run) + len(wavelengths_nm))]
+        background_p_int[i] = int_data[(i*data_p_per_run) : ((i*data_p_per_run) + len(wavelengths_nm))]
 
-    #remove the background absorption data from the original array to make it easier to iterate over to extract the sample absorption data
-    for i in run_indicies:
-        del absorption_data[(i*abs_per_run) : ((i*abs_per_run) + (len(wavelengths_nm)*4))]    
+    mean_bckg_p_int = np.zeros_like(wavelengths_nm)
+    bckg_p_int_st_dev = np.zeros_like(wavelengths_nm)
+
+    for i, v in enumerate(background_p_int.T):
+        mean_bckg_p_int[i] = np.cumsum(v, axis=0)[-1]/number_of_runs
+        bckg_p_int_st_dev[i] = np.std(v)
+
     
-    # store the 'unpumped' sample absorption data from each run in an array
-    sample_up_delta_OD = np.zeros(shape=(len(run_indicies), len(delays_ps), len(wavelengths_nm)))
 
-    abs_per_run = len(delays_ps)*len(wavelengths_nm)*4 
+    data_p_per_run = len(delays_ps)*len(wavelengths_nm)*4 
     # update this variable so now it only incl. the number of data points for the measurement scans (exlude background data which we removed)
+
+    # remove the background intensity data from the original array to make it easier to iterate over to extract the sample intensity data
+    del int_data[0 : (len(wavelengths_nm)*4)]  
+    
+    for i in run_indicies:
+        if i <=8:
+            del int_data[((i+1)*data_p_per_run) : (((i+1)*data_p_per_run) + (len(wavelengths_nm)*4))]    
+
+
+
+    
+    # store the 'unpumped' sample intensity data from each run in an array
+    sample_up_int = np.zeros(shape=(len(run_indicies), len(delays_ps), len(wavelengths_nm))) # , dtype=np.longdouble)
     
     for i in run_indicies:
         for idx, val in enumerate(delays_ps):
-            sample_up_delta_OD[i, idx] = absorption_data[((i*abs_per_run)+(len(wavelengths_nm)* (2 + (4*idx)))) : ((i*abs_per_run)+(len(wavelengths_nm)*(3 + (4*idx))))]
+            sample_up_int[i, idx] = int_data[((i*data_p_per_run) + (len(wavelengths_nm)*2 + (4*len(wavelengths_nm)*idx)) ) : ( (i*data_p_per_run)+(len(wavelengths_nm)*3 + (4*len(wavelengths_nm)*idx)) )]
+
     
-    # store the 'pumped' sample absorption data from each run in an array
-    sample_p_delta_OD = np.zeros(shape=(len(run_indicies), len(delays_ps), len(wavelengths_nm)))
+    # store the mean unpumped intensity value in an array
+    mean_sample_up_int = np.zeros(shape=(len(delays_ps), len(wavelengths_nm)))
+    mean_sample_up_int = np.cumsum(sample_up_int, axis=0)[-1]/number_of_runs
+
+    # store the standard deviation of the distribution of the unpumped intensity values in an array
+    sample_up_int_st_dev = np.zeros(shape=(len(delays_ps), len(wavelengths_nm)))
+    sample_up_int_st_dev = np.std(sample_up_int, axis=0)
+
+ 
+
+        
+    # store the 'pumped' sample intensity data from each run in an array
+    sample_p_int = np.zeros(shape=(len(run_indicies), len(delays_ps), len(wavelengths_nm)))
         
     for i in run_indicies:
         for idx, val in enumerate(delays_ps):
-            sample_p_delta_OD[i, idx] = absorption_data[((i*abs_per_run)+(len(wavelengths_nm)*(idx*4))) : ((i*abs_per_run)+(len(wavelengths_nm)*((idx*4)+1)))]
+            sample_p_int[i, idx] = int_data[( (i*data_p_per_run) + (len(wavelengths_nm) + (4*len(wavelengths_nm)*idx))) : ( (i*data_p_per_run)+(len(wavelengths_nm)*2 + ((4*len(wavelengths_nm)*idx))))]
+
+    # store the mean pumped intensity value in an array
+    mean_sample_p_int = np.zeros(shape=(len(delays_ps), len(wavelengths_nm)))
+    mean_sample_p_int = np.cumsum(sample_p_int, axis=0)[-1]/number_of_runs
+    
+    # store the standard deviation of the distribution of the pumped intensity values in an array
+    sample_p_int_st_dev = np.zeros(shape=(len(delays_ps), len(wavelengths_nm)))
+    sample_p_int_st_dev = np.std(sample_up_int, axis=0)
+
+
 
     
-    # subtract the 'unpumped' background spectrum from the corresponding 'unpumped' sample absorption spectra
+    """
+    # propagate the uncertainty in each measurement to the difference absorption values
+    A = I_up - I_bup
+    B = I_p - I_bup
+    
+    difference_absorption(x) = np.log10(A/B)
+
+    
+
+    sig_A = np.sqrt(sig_I_up**2 + sig_I_bup**2) 
+    sig_B = np.sqrt(sig_I_p**2 + sig_I_bp**2) 
+    
+
+    Y = A/B
+    sig_Y = Y * np.sqrt( (sig_A/A)**2 + (sig_B/B)**2 )
+
+    x = np.log10(Y)
+
+    sig_x = sig_Y / (Y * np.log(10))
+
+    """
+
+    # create an array containing the unpumped background standard deviation values sharing the same dimensions as the array of unpumped signal st devs
+    bckg_up_int_st_dev_ = np.zeros_like(sample_up_int_st_dev)
+    
+    for i, v in enumerate(bckg_up_int_st_dev_):
+        bckg_up_int_st_dev_[i] = bckg_up_int_st_dev
+        
+    # propagate the standard deviation with respect to A
+    sig_A = np.sqrt((sample_up_int_st_dev**2) + (bckg_up_int_st_dev_)**2)
+
+
+    
+    # create an array containing the pumped background standard deviation values sharing the same dimensions as the array of pumped signal st devs
+    bckg_p_int_st_dev_ = np.zeros_like(sample_p_int_st_dev)
+    
+    for i, v in enumerate(bckg_p_int_st_dev_):
+        bckg_p_int_st_dev_[i] = bckg_p_int_st_dev
+        
+    # propagate the error with respect to B
+    sig_B = np.sqrt((sample_p_int_st_dev**2) + (bckg_p_int_st_dev_)**2)
+
+
+    
+    # create an array containing the background subtract unpumped intensity data
+    A = np.zeros_like(sample_up_int)
     
     for i in run_indicies:
         for idx, val in enumerate(delays_ps):
-            sample_up_delta_OD[i, idx] - background_up_delta_OD[i] 
+            A = sample_up_int[i, idx] - background_up_int[i] 
+            # only one background spectrum is taken per run so the same background spectrum is subtracted from the spectrum at each delay point
+
+    # create an array containing the background subtracted pumped intensity data
+    B = np.zeros_like(sample_p_int)
+    
+    for i in run_indicies:
+        for idx, val in enumerate(delays_ps):
+            B = sample_p_int[i, idx] - background_p_int[i] 
+            # only one background spectrum is taken per run so the same background spectrum is subtracted from the spectrum at each delay point
+
+    Y = A/B
+
+    sig_Y = Y * np.sqrt( ((sig_A / A)**2) + ((sig_B / B)**2) )
+
+    sig_x = sig_Y / (Y * np.log(10))
+
+
+
+
+
+    
+    
+    # subtract the 'unpumped' background spectrum intensity from the corresponding 'unpumped' sample spectra intensity
+    for i in run_indicies:
+        for idx, val in enumerate(delays_ps):
+            sample_up_int[i, idx] - background_up_int[i] 
             # only one background spectrum is taken per run so the same background spectrum is subtracted from the spectrum at each delay point
             
 
-    # subtract the 'pumped' background spectrum from the corresponding 'pumped' sample absorption spectra
+
+    
+    # subtract the 'pumped' background spectrum intensity from the corresponding 'pumped' sample spectra intensity
     for i in run_indicies:
         for idx, val in enumerate(delays_ps):
-            sample_p_delta_OD[i, idx] - background_p_delta_OD[i]
+            sample_p_int[i, idx] - background_p_int[i]
             # only one background spectrum is taken per run so the same background spectrum is subtracted from the spectrum at each delay point
     
 
+
+    
+    # calculate the difference absorption spectra for each run
+    raw_delta_OD = np.zeros_like(sample_up_int)
+    
+    for i, v in enumerate(raw_delta_OD):
+        raw_delta_OD[i] = np.log10(sample_up_int[i]/sample_p_int[i])*1000
+
     
     
-    # average the 'unpumped' sample absorption spectra for each run
+    # average the 'unpumped' sample spectra intensity for each run
     """
     avg_sample_up_delta_OD = np.zeros(shape=(len(delays_ps), len(wavelengths_nm)))
 
@@ -234,10 +377,11 @@ def load_dat_file(file, extension):
             avg_sample_up_delta_OD[idx, w_idx] = ( (sample_up_delta_OD[0][idx][w_idx] + sample_up_delta_OD[1][idx][w_idx] + sample_up_delta_OD[2][idx][w_idx] + sample_up_delta_OD[3][idx][w_idx]) / len(run_indicies) )
     """
     
-    avg_sample_up_delta_OD = np.cumsum(sample_up_delta_OD, axis=0)[-1]/number_of_runs
+    avg_sample_up_int = np.cumsum(sample_up_int, axis=0)[-1]/number_of_runs
 
 
-    # average the 'pumped' sample absorption spectrum for each run
+    
+    # average the 'pumped' sample absorption spectrum intensity for each run
     """
     avg_sample_p_delta_OD = np.zeros(shape=(len(delays_ps), len(wavelengths_nm)))
 
@@ -245,50 +389,157 @@ def load_dat_file(file, extension):
         for w_idx, w_val in enumerate(wavelengths_nm):
             avg_sample_p_delta_OD[idx, w_idx] = ( (sample_p_delta_OD[0][idx][w_idx] + sample_p_delta_OD[1][idx][w_idx] + sample_p_delta_OD[2][idx][w_idx] + sample_p_delta_OD[3][idx][w_idx]) / len(run_indicies) )
     """
+        
+    avg_sample_p_int = np.cumsum(sample_p_int, axis=0)[-1]/number_of_runs
     
-    avg_sample_p_delta_OD = np.cumsum(sample_p_delta_OD, axis=0)[-1]/number_of_runs
+
 
 
 
     
-    # retrieve the difference absorption spectrum by subtracting the 'unpumped' spectra from the 'pumped' spectra
-    delta_OD = np.zeros(shape=(len(delays_ps), len(wavelengths_nm)))
+
+    
+    # retrieve the difference absorption spectra by taking the log base 10 of the intensity of the 'unpumped' spectra from the intensity of the 'pumped' spectra 
+    
+    # delta_OD = np.zeros(shape=(len(delays_ps), len(wavelengths_nm)))
     """
     for idx, val in enumerate(delays_ps):
         for w_idx, w_val in enumerate(wavelengths_nm):
             delta_OD[idx, w_idx] = np.log10(avg_sample_up_delta_OD[idx, w_idx] / avg_sample_p_delta_OD[idx, w_idx])
     """
-    delta_OD = np.log10(avg_sample_up_delta_OD / avg_sample_p_delta_OD)
+    # delta_OD = (np.log10(avg_sample_up_int / avg_sample_p_int)) * 1000
+    # np.cumsum(raw_delta_OD, axis=0)[-1]/number_of_runs
+
+
+    # produces difference absorption values closest to those in the matrix file (<1e-6 difference)
+    delta_OD = np.zeros_like(sample_p_int)
+    
+    for idx, val in enumerate(delta_OD):
+        for jdx, wal in enumerate(val):
+            
+            A = sample_up_int[idx, jdx] - background_up_int[idx]
+            B = sample_p_int[idx, jdx] - background_p_int[idx]
+            
+            delta_OD[idx, jdx] = np.log10(A/B)*1000
+
+
+    delta_OD = np.cumsum(delta_OD, axis=0)[-1]/number_of_runs
+
+    
+    """
+     ^ the values in the array calculated here are different to those stored in the '_matrix' file 
+       perhaps this is due to differences in averaging 
+      (i.e. matrix may contain the average of the values from each scan and the number of independent runs whilst the data file contains the mean values for          each run averaged from all the repeats in that run which are then average together in this function)
+    """
+
+
+
+
+
+    
+
+
+    
+    # calculate the 'sum of squared total' np.sum((y_i - y{hat}_i)**2)
+    
+    y_dif = np.zeros_like(raw_delta_OD)
+
+    for i in range(number_of_runs):
+        y_dif[i] = (raw_delta_OD[i] - delta_OD)**2
+
+    
+    SST = np.zeros_like(delta_OD)
+    SST = np.cumsum(y_dif, axis=0)[-1]
+
+    # this isn't quite correct, basically want to use it to generate a metric for the quality of the fit of the kinetic model to the raw data
+    # where each value is weighted by the standard deviation of the distribution of values surrounding the mean 
+    # (so that values with large standard deviations are less important to the fit metric than those with smaller standard deviations)
+    
+        
+        
+
+    
         
     
-    return wavelengths_nm, delays_ps, background_up_delta_OD, background_p_delta_OD, sample_up_delta_OD, sample_p_delta_OD, avg_sample_up_delta_OD, avg_sample_p_delta_OD, delta_OD
+    return np.array(wavelengths_nm), np.array(delays_ps), background_up_int, background_p_int, sample_up_int, sample_p_int, avg_sample_up_int, avg_sample_p_int, delta_OD, sig_x, SST
     
-    # sample_up_delta_OD and sample_p_delta_OD are arrays containing the raw probe 'intensity' detected at the camera from each run
+    # sample_up_int and sample_p_int are arrays containing the raw probe 'intensity' detected at the camera from each run
     # avg_p_" " and avg_up_" " are arrays containing the averaged 'pumped' and 'unpumped' probe 'intensity' data 
     # delta_OD is the difference absorption spectrum 
 
 
 
+"""
+load a 'stats.dat' file
+"""
+
+def load_stats_file(file, extension):
+    """
+    loads a 'stats.dat' file and returns the standard deviations of the pumped and unpumped signals and the background signals for each measurement
+    """
+
+    PS_SD = []
+    NPS_SD = []
+    delays = []
+    
 
     
+    with open(file+extension, encoding="utf-8") as f:
+        for line in f:
+            
+            if ' PumpedSignalDeviation=' in line:
+                _p = line[line.rindex(' PumpedSignalDeviation='):]
+                PS_SD.append(float(_p[_p.rindex('='):][1:-1]))
+
+            if 'NotPumpedSignalDeviation=' in line:
+                n_p = line[line.rindex('NotPumpedSignalDeviation='):]
+                NPS_SD.append(float(n_p[n_p.rindex('='):][1:-1]))
+
+            if ' Delay ' in line:
+                _d = line[line.rindex(' Dela'):]
+                delays.append(float(_d[_d.rindex('y '):][1:18]))
+                    
+    PS_SD = PS_SD[0:len(PS_SD):2]
+    NPS_SD = NPS_SD[0:len(NPS_SD):2]
+    
+    unique_delays = []
+    
+    for x in delays:
+        if x not in unique_delays:
+            unique_delays.append(x)
+    
+    B_SD = PS_SD[0:len(PS_SD):len(unique_delays)+1]
+    
+    del PS_SD[0:len(PS_SD):len(unique_delays)+1]
+    del NPS_SD[0:len(PS_SD):len(unique_delays)+1]
+
+
+    return np.array(PS_SD), np.array(NPS_SD), np.array(B_SD)
+
+
 """
 Create a new class 'Rug' and initialise that class with a set of 'attributes'
 
-The attributes 'wavelengths', 'delays' and 'abs' are array containing the wavelength, delay and difference absorption data, respectively.
+The attributes 'wavelengths', 'delays' and 'abs' are arrays containing the wavelength, delay and difference absorption data, respectively.
 """
 
 class Rug:
-    def __init__(self, fname=None, extension=None, type=None):    # will need to add 'type' in the function for joing SHG/FUN data
+    def __init__(self, fname=None, extension=None, type=None):    # will need to add 'type' in the function for joining SHG/FUN data
         
         if fname and extension:
             if type == False:
                 self.wavelengths, self.delays, self.abs = load_file(fname, extension)
                 self.filename = os.path.basename(fname)
-            elif type == True:
-                self.wavelengths, self.delays, self.bupabs, self.bpabs, self.raw_sup_abs, self.raw_sp_abs, self.avg_sup_abs, self.avg_sp_abs, self.delta_OD = load_dat_file(fname, extension) 
-                # self.abs = self.avg_sup_abs, select the absorption data by changing '._abs' to '.abs'
                 
+            elif type == True:
+                self.wavelengths, self.delays, self.bup_int, self.bp_int, self.raw_sup_int, self.raw_sp_int, self.avg_sup_int, self.avg_sp_int, self.delta_OD, self.sig_x, self.SST = load_dat_file(fname, extension) 
                 self.filename = os.path.basename(fname)
+                # ^ self.abs = self.avg_sup_int, select the desired array by changing the attribute "._' '" to '.abs'
+
+            elif type == 'stats':
+                self.p_sd, self.up_sd, self.b_sd = load_stats_file(fname, extension) 
+            
+            
             return
             
         """
@@ -454,13 +705,12 @@ class Rug:
         
         tick_range = np.linspace(vmin, vmax, 10)
         cbar = fig.colorbar(im, ticks=tick_range) # change the fontsize ? [vmin, 0, vmax]
-        cbar.set_label(label = 'Δ O.D', fontsize = axis_fontsize, y = 0.55, labelpad = 40, rotation=360)
+        cbar.set_label(label = 'Δ mO.D', fontsize = axis_fontsize, y = 0.55, labelpad = 40, rotation=360)
         # (label = 'Δ O.D', fontsize = 30, y = 0.52, labelpad = 30, rotation=360)
         cbar.ax.tick_params(labelsize = tick_size)
 
 
         ## contour plot ##
-        """
         n_pos = []
         n_neg = []
 
@@ -473,26 +723,39 @@ class Rug:
                     
         n_pos = len(n_pos) 
         n_neg = len(n_neg)
+
+        n_points = []
         
-        
+        if n_pos >= n_neg:
+            n_points = n_pos
+        else:
+            n_points = n_neg
+            
         
         #n_pos = 110 # 124
         #n_neg = 146 # 132
         
+        """
         pos = cm.get_cmap('YlOrRd', n_pos)
         neg = cm.get_cmap('Blues_r', n_neg)
-        
         new_colours = np.vstack((neg(np.linspace(0, 1, n_neg)),
                                  pos(np.linspace(0, 1, n_pos))))
+        """
+        
+        pos = cm.get_cmap('YlOrRd', n_points)
+        neg = cm.get_cmap('Blues_r', n_points)
+        
+        new_colours = np.vstack((neg(np.linspace(0, 1, n_points)),
+                                 pos(np.linspace(0, 1, n_points))))
 
-        new_cmap = colors.ListedColormap(new_colours, name='RedBlue') # this colour scheme is ideal but needs modifying to make 0  = white, consistently.
+        new_cmap = colors.ListedColormap(new_colours, name='RedBlue') # this colour scheme is ideal but needs modifying to make 0 = white, consistently.
 
         cmap = new_cmap # 'PuOr_r'
-        """
+        
         
         # diverging colourmaps (blue/red,  0 = white):
         # 'seismic', 'bwr', 'coolwarm','RdBu_r'
-        cmap = 'RdBu_r'
+        #cmap = 'RdBu_r'
         
         class MidpointNormalize(colors.Normalize):
             def __init__(self, vmin=None, vmax=None, midpoint=None, clip=False):
@@ -533,7 +796,7 @@ class Rug:
 
                 # Haem-Cys_400_SHG: 
                 
-                pretty_array[i][0:] = self.abs[i][0:]
+                pretty_array[i, 0:] = self.abs[i, 0:]
 
             
             fig_1 = plt.figure(figsize=(10,10))
@@ -543,6 +806,8 @@ class Rug:
             ax_1 = fig_1.add_subplot(grid_1[0:7]) 
             
             levels = np.linspace(vmin, vmax, 20) 
+
+            pump = 409 # add a vertical line to the plot at the pump wavelength
         
             # restrict the wavelengths and delay axis within a specified range 
             # ferric_630_total: 10, 136, 0, 90
@@ -568,17 +833,27 @@ class Rug:
             dl_lim_init = Rug.find_nearest(self.delays, self.delays[0])[0] 
             du_lim_init = Rug.find_nearest(self.delays, self.delays[-1])[0] 
             
+            """
             test = ax_1.contourf(self.wavelengths[wl_lim_init:wu_lim_init], self.delays[dl_lim_init:du_lim_init], pretty_array[dl_lim_init:du_lim_init, wl_lim_init:wu_lim_init], levels, cmap=cmap, norm=MidpointNormalize(vmin = vmin, vmax = vmax, midpoint = 0)) # colors.TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax))
+            """
+            # ^ use with existing colormap
+            
+            test = ax_1.contourf(self.wavelengths[wl_lim_init:wu_lim_init], self.delays[dl_lim_init:du_lim_init], pretty_array[dl_lim_init:du_lim_init, wl_lim_init:wu_lim_init], levels, cmap=cmap, norm=colors.TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax))
+            # ^ use with 'RedBlue'
             
             contour_1 = ax_1.contour(self.wavelengths[wl_lim_init:wu_lim_init], self.delays[dl_lim_init:du_lim_init], pretty_array[dl_lim_init:du_lim_init, wl_lim_init:wu_lim_init], levels, colors=('black',), linewidths=(1,))
+            
+            # ax_1.axvline(x=pump, ymin=0, ymax=1, color='black', ls='--', lw=5, label=r'$\{pump}$')
             
             ax_1.tick_params(axis="both", labelsize = tick_size)
             ax_1.set_yscale('symlog')
             ax_1.set_xlabel('Wavelength (nm)', fontsize = axis_fontsize)
             ax_1.set_ylabel('Delay (ps)', fontsize = axis_fontsize, rotation = 360)
             ax_1.xaxis.set_label_coords(0.5, -0.07) 
-            ax_1.yaxis.set_label_coords(-0.1, 0.54)
-            #ax_1.set_ylim(self.delays[0], 10)
+            
+            ax_1.yaxis.set_label_coords(-0.1, 0.6) # sym-log # (-0.1, 0.58)
+            # ax_1.yaxis.set_label_coords(-0.1, 0.45) # not scaled
+            
             cbar_1 = fig_1.colorbar(test, ax=ax_1)
             cbar_1.set_label(label = 'Δ O.D', fontsize = axis_fontsize, y = 0.51, labelpad = 50, rotation=360)
             cbar_1.ax.tick_params(labelsize = tick_size)
@@ -588,7 +863,7 @@ class Rug:
             # Sliders
             global levels_slider
             
-            axwave = plt.axes([0.1, 0.01, 0.8, 0.015]) 
+            axwave = plt.axes([0.1, 0.005, 0.8, 0.01]) # ([0.1, 0.01, 0.8, 0.015]) 
             levels_slider = Slider(
                 ax=axwave,
                 label='Contours',
@@ -597,13 +872,11 @@ class Rug:
                 valinit=20,
                 valstep=1,
                 color='lightsteelblue',
-                handle_style={'facecolor': 'white', 'edgecolor': '.05', 'size': 20} # .75
+                handle_style={'facecolor': 'white', 'edgecolor': '.04', 'size': 10} # .75
             )
             levels_slider.label.set_size(20)
 
             # TextBoxes for adjusting axis limits
-            #global wl_min_box
-            
             ax_wl_min = fig_1.add_axes([0.2, 0.94, 0.04, 0.05]) 
             ax_wl_max = fig_1.add_axes([0.35, 0.94, 0.04, 0.05])
             
@@ -631,23 +904,36 @@ class Rug:
                 
                 dl_lim = Rug.find_nearest(self.delays, float(dl_min_box.text))[0]
                 du_lim = Rug.find_nearest(self.delays, float(dl_max_box.text))[0]
+
+                s_levels = np.linspace(vmin, vmax, levels_slider.val) 
                 
+                """
                 test = ax_1.contourf(self.wavelengths[wl_lim:wu_lim], self.delays[dl_lim:du_lim], pretty_array[dl_lim:du_lim, wl_lim:wu_lim], levels_slider.val, cmap=cmap, norm=MidpointNormalize(vmin = vmin, vmax = vmax, midpoint = 0)) # colors.TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax))
-    
-                contour_1 = ax_1.contour(self.wavelengths[wl_lim:wu_lim], self.delays[dl_lim:du_lim], pretty_array[dl_lim:du_lim, wl_lim:wu_lim], levels_slider.val, colors=('black',), linewidths=(1,))
+                """
+                # ^ use with existing colormap
                 
+                test_1 = ax_1.contourf(self.wavelengths[wl_lim:wu_lim], self.delays[dl_lim:du_lim], pretty_array[dl_lim:du_lim, wl_lim:wu_lim], s_levels, cmap=cmap, norm=colors.TwoSlopeNorm(vcenter=0, vmin=vmin, vmax=vmax))
+                # ^ use with 'RedBlue'
+                
+                contour_1 = ax_1.contour(self.wavelengths[wl_lim:wu_lim], self.delays[dl_lim:du_lim], pretty_array[dl_lim:du_lim, wl_lim:wu_lim], s_levels, colors=('black',), linewidths=(1,))
+                
+                # ax_1.axvline(x=pump, ymin=0, ymax=1, color='black', ls='--', lw=5, label=r'$\{pump}$')
+
                 ax_1.tick_params(axis="both", labelsize = tick_size)
                 ax_1.set_yscale('symlog')
                 ax_1.set_xlabel('Wavelength (nm)', fontsize = axis_fontsize)
                 ax_1.set_ylabel('Delay (ps)', fontsize = axis_fontsize, rotation = 360)
                 ax_1.xaxis.set_label_coords(0.5, -0.07) 
-                ax_1.yaxis.set_label_coords(-0.1, 0.54)
-                #ax_1.set_ylim(self.delays[0], 10)
-                cbar_1 = fig_1.colorbar(test, cax=cax)
+                
+                ax_1.yaxis.set_label_coords(-0.1, 0.6) # sym-log (-0.1, 0.58)
+                # ax_1.yaxis.set_label_coords(-0.1, 0.52) # not scaled
+                
+                ax_1.set_title(self.filename, loc='center', fontsize=title_fontsize, y=1.02)
+                cbar_1 = fig_1.colorbar(test_1, cax=cax)
                 cbar_1.set_label(label = 'Δ O.D', fontsize = axis_fontsize, y = 0.51, labelpad = 50, rotation=360)
                 cbar_1.ax.tick_params(labelsize = tick_size)
                 #ax_1.clabel(contour_1, fmt='%2.1f', colors='black', fontsize=10) # add labels to the levels directly on the plot
-                ax_1.set_title(self.filename, fontsize = title_fontsize, y=1.02)
+                
                 
                 fig_1.canvas.draw_idle()
                 
@@ -695,7 +981,6 @@ class Rug:
         -----------
             wavelength_trace : np.ndarray
                 Array of the wavelength slice
-        
         """
         
         spectra = []
@@ -738,7 +1023,7 @@ class Rug:
             time_trace : np.ndarray
                 Array of the time slice
        
-        
+
         """
         traces = []
         
@@ -773,7 +1058,7 @@ class Rug:
         Interactive widget with a slider to inspect absorption spectra at a given delay
         """
         
-        spectrum_init = self.get_spectrum(0) # [0]
+        spectrum_init = self.get_spectrum(self.delays[sl_min]) # [0]
 
         fig = plt.figure(figsize=(10,10))
         grid = GridSpec(2, 2, width_ratios=[3, 3], height_ratios=[3, 3], 
@@ -1005,7 +1290,7 @@ class Rug:
                 norm=None,scale='log', title=None, colourbar=False, xlabel=True, ylabel=True,
                 yticks=True, xticks=True, show=False, raw=False, plot_dispersion=False, ax_min=-1, ax_max=-1):
         """
-        Interactive widget with a slider to inspect absorption spectra at a given delay
+        Interactive widget with a slider to inspect traces at a given wavelength
         """
 
         trace_init = self.get_trace(self.wavelengths[0])
@@ -1419,6 +1704,8 @@ class Rug:
         # evaluate a polynomial at points, x 
         
         self.dispersion_coefs = coefs  # stores the coefficients of the fit.convert() as an attribute of self
+        self.disp_wavelengths = wavelengths
+        self.disp_times = times
 
 
         return
@@ -1509,6 +1796,7 @@ class Rug:
         
         #JDP evaluate the TA interpolation function over the whole grid
         data_interp = interp2D((times_2D, wavelength_2D)).T 
+        
         #JDP no understanding of why this needs transposing, some subtlety with the interpolator?
           
         #JDP note NB pcolormesh with nearest shading centers each time point on a grid cell, and extends the cell
@@ -1523,13 +1811,14 @@ class Rug:
         # where dt is the smallest difference between any consecutive values from self.delays i.e. the 'resolution'
         # then convert the values in the array from floats to integers
 
+
         """
         I don't think this code is used for anything...
         
         #JDP get the maximum shift, as we'll pad the interpolated matrix by this to ensure we don't roll over edges
         maxshift = np.max(np.abs(time_shifts)) #int(....)
         
-        #JDP pad the matrix with an unphysical value ### why?###
+        #JDP pad the matrix with an unphysical value ### why? ###
         
         matrix_padded = np.pad(data_interp, ((maxshift, maxshift), (0,0)), mode='constant',
             constant_values=-99)
@@ -1543,7 +1832,7 @@ class Rug:
         #JDP apply the chirp correction by rolling each wavelength's time axis by the necessary amount
         shifted_matrix = Rug.indep_roll(data_interp, time_shifts, axis=0) 
         # figure out how 'indep_roll' works at some point
-        
+
         
         #JDP now need to "undo" the interpolation. should just be:
         time_indices = []
@@ -1555,6 +1844,8 @@ class Rug:
         for each value in 'self.delays', finds the closest value in 'self.interpolated_time' and stores the index of the value
         from 'self.interpolated_time' in the list 'time_indices'
         """
+        print(shifted_matrix.shape)
+        #plt.plot(shifted_matrix)
         
         self.abs = shifted_matrix[time_indices, :] 
         # saves the interpolated difference absorbance data from the array 'shifted_matrix' in the region specified by the indices stored 
@@ -1719,6 +2010,7 @@ class Rug:
         
         return
 
+        
     def combine_rugs_wavelengths(rugs, fname, show=False):
         # have to input rugs in the order, SHG, FUN because of how the 'start' and 'end' wavelengths are selected for the new wavelengths axis
         
@@ -1957,7 +2249,7 @@ class Rug:
             self.peek()
         return
 
-    def savefile(self): #coefc, dispersion, offset
+    def savefile(self, prefix=None): # coefc, dispersion, offset
         """
         Saves processed data as a new file which includes its metadata, date, time and all the processing applied to it.
         
@@ -1995,7 +2287,7 @@ class Rug:
         current_time = time.localtime()
         timestring = time.strftime("%d/%m/%Y %H:%M:%S")
       
-        file = np.savetxt(self.filename+'_processed'+'.dat', array,
+        file = np.savetxt(prefix+self.filename+'_processed'+'.dat', array,
                           header='XAxisTitleWavelength(nm)\nYAxisTitle Delay (ps)\n'
                           +metadata+'\n'+'Date&time: '+ timestring)
         
@@ -2005,6 +2297,23 @@ class Rug:
         fig = self.peek() #colourbar=True
         plt.savefig(self.filename+"_processed.png")
         #plt.savefig('myfig')
+
+        if hasattr(self, 'sig_x'):
+            array = np.zeros((lent+1, lenm+1))
+
+            array_wl = self.wavelengths
+            array_times = self.delays[:,None].reshape((lent,))
+            array_matrix = self.sig_x
+    
+            array[0,1:] = array_wl
+            array[1:,0] = array_times
+            array[1:, 1:] = array_matrix
+            
+            np.savetxt(prefix+self.filename+'_st_dev_arr'+'.dat', array,
+                        header=metadata+'\n'+'Date&time: '+ timestring)
+
+        else:
+            return
         
         
         if hasattr(self, 'fit_data'):
@@ -2015,7 +2324,7 @@ class Rug:
             fit_data_arr[1:,0] = array_times
             fit_data_arr[1:, 1:] = np.array(self.fit_data).T # probably don't need to transpose here because transpose again in 'explore_fit'
             
-            np.savetxt(self.filename+'_fit_data'+'.dat', fit_data_arr,
+            np.savetxt(prefix+self.filename+'_fit_data'+'.dat', fit_data_arr,
                           header='XAxisTitleWavelength(nm)\nYAxisTitle Delay (ps)\n'
                           +metadata+'\n'+'Date&time: '+ timestring)
         else:
@@ -2038,6 +2347,8 @@ class Rug:
          
         return
 
+
+    
     def compute_SVD(self, threshold, tol=1.0E-10):
 
         try:
@@ -2088,7 +2399,9 @@ class Rug:
         
         return
 
-    def SVD_explorer(self):
+
+    
+    def SVD_explorer(self, x_axmin=-1, x_axmax=120):
         """
         generates a widget containing a plot of the SVD eigenvalues, traces, spectra for n components as well as colourmap of the original 
         array of difference absorption values 
@@ -2124,7 +2437,7 @@ class Rug:
         ax2.set_xlabel('Time delay (ps)', fontsize = 15)
         #ax2.set_yscale('symlog')
         #ax2.set_xscale('symlog')
-        ax2.set_xlim(-1, self.delays[-1]) # self.delays[0], self.delays[-1]
+        ax2.set_xlim(x_axmin, self.delays[x_axmax]) # self.delays[0], self.delays[-1]
         #h, l = ax2.get_legend_handles_labels()
         #ax2.legend(h, l)
         ax2.legend()
@@ -2182,7 +2495,7 @@ class Rug:
     def find_component_spectra(self, train_size):
         """
         Function for predicting component species spectra from the raw difference absorption dataset
-        Note that the current constrainsts passed to McrAR are that the data is both non - negative and normalized.
+        Note that the current constraints passed to McrAR are that the data is both non - negative and normalized.
         """
         positive_abs = self.abs # - np.min(self.abs) 
         # comment out this step for datasets that already contain positive values only i.e pumped / unpumped absorption datasets
@@ -2249,7 +2562,7 @@ class Rug:
                 
             fit_report_arr = np.array(fit_report)
             
-            np.savetxt(self.filename+'_fit_report'+'.dat', fit_report_arr,
+            np.savetxt('Fit_Report_Data/'+self.filename+'_fit_report'+'.dat', fit_report_arr,
                           header=self.filename+'_fit_report \n\nDate&time:\t'+timestring+
                       '\n\nFit Method\t'+str(out.method)+
                        '\nTotal Unique Traces in Dataset\t'+str(len(self.wavelengths))+
@@ -2562,6 +2875,7 @@ class Rug:
         ax.set_xlabel(xlabel, fontsize = 20)
         ax.set_ylabel(ylabel, fontsize = 20)
         ax.set_xlim(xlim[0], xlim[1])
+        ax.grid(visible=True)
         
 
         # Adjustable slider to scan through the fits/traces at the input wavelengths
@@ -2616,6 +2930,16 @@ class Rug:
 
     
 
+
+
+
+
+
+
+
+
+
+    # the following is all an attempt to fit the data to a hard model using a 2D fit (sum of exp gaussian along y axis and sum of gaussians along x axis)
 
     def global_fit_2D_test(self):
 
